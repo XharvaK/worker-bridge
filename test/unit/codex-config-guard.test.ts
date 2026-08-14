@@ -34,10 +34,54 @@ describe('Codex project configuration authority guard', () => {
     ['[mcp_servers.test]\ncommand = "tool"\n', 'capability'],
     ['unknown_setting = true\n', 'unknown'],
     ['[unparseable\n', 'invalid'],
+    ['model_reasoning_effort = "high\\q"\n', 'invalid'],
+    ['model_reasoning_effort = "high"\nmodel_reasoning_effort = "low"\n', 'duplicate'],
   ])('rejects %s as %s', (config, reasonWord) => {
     const result = inspectCodexProjectConfig(fixture(config));
     expect(result.allowed).toBe(false);
     expect(result.reason).toMatch(new RegExp(`PERMISSION_BLOCKED.*${reasonWord}`, 'i'));
+  });
+
+  it('rejects a non-directory .codex path instead of treating it as absent', () => {
+    const root = fixture();
+    fs.writeFileSync(path.join(root, '.codex'), 'not a directory', 'utf8');
+
+    const result = inspectCodexProjectConfig(root);
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toMatch(/PERMISSION_BLOCKED.*(?:unreadable|metadata|directory|path)/i);
+  });
+
+  it('rejects a symlinked .codex path rather than following it', ({ skip }) => {
+    const root = fixture();
+    const external = fixture('[model]\nreasoning_effort = "high"\n');
+    const linkPath = path.join(root, '.codex');
+    try {
+      fs.symlinkSync(path.join(external, '.codex'), linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch {
+      skip();
+      return;
+    }
+
+    const result = inspectCodexProjectConfig(root);
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toMatch(/PERMISSION_BLOCKED.*symlink/i);
+  });
+
+  it('inspects a configuration at the repository ancestor without leaving the bounded root', () => {
+    const repositoryRoot = fixture();
+    fs.mkdirSync(path.join(repositoryRoot, '.git'));
+    fs.mkdirSync(path.join(repositoryRoot, '.codex'));
+    const configPath = path.join(repositoryRoot, '.codex', 'config.toml');
+    fs.writeFileSync(configPath, '[model]\nreasoning_effort = "high"\n', 'utf8');
+    const worktree = path.join(repositoryRoot, 'nested', 'worktree');
+    fs.mkdirSync(worktree, { recursive: true });
+
+    const result = inspectCodexProjectConfig(worktree);
+
+    expect(result.allowed).toBe(true);
+    expect(result.inspectedFiles).toContain(configPath);
   });
 
   it('rejects oversized configuration without changing its contents', () => {
