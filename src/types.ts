@@ -278,6 +278,7 @@ export interface WorkerInvocationRequest {
   modelId: string;
   variant?: string;
   sessionId?: string;
+  sessionIdentity?: WorkerSessionIdentity;
   timeoutSeconds?: number;
 }
 
