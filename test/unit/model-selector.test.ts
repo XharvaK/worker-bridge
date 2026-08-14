@@ -228,6 +228,33 @@ describe('ModelSelector & target policy invariants', () => {
     expect(explicit.isExplicitOnly).toBe(true);
   });
 
+  it('resolves an explicitly discovered target from the requested model', async () => {
+    const config = makeConfig({
+      codex_explicit: {
+        targetId: 'codex_explicit',
+        platformId: 'codex',
+        displayName: 'Codex',
+        aliases: ['codex'],
+        reasoning: { strategy: 'highest-supported' },
+        explicitOnly: true,
+        modelBinding: 'EXPLICIT_DISCOVERED',
+      },
+    }, { PLANNER: [] });
+    const registry = new AdapterRegistry();
+    registry.register(new FakeAdapter('codex', ['gpt-5']));
+    const selector = new ModelSelector(registry, config);
+
+    const byTarget = await selector.resolveSelection({
+      targetId: 'codex_explicit',
+      platform: 'codex',
+      model: 'gpt-5',
+    }, 'PLANNER');
+    const byPlatform = await selector.resolveSelection({ platform: 'codex', model: 'gpt-5' }, 'PLANNER');
+
+    expect(byTarget).toMatchObject({ targetId: 'codex_explicit', platform: 'codex', modelId: 'gpt-5' });
+    expect(byPlatform).toMatchObject({ targetId: 'codex_explicit', platform: 'codex', modelId: 'gpt-5' });
+  });
+
   it('normalizes a legacy mistaken Gemini Flash reference to the configured 3.7 target', async () => {
     const config = validateConfig({
       mailboxRepoPath: 'C:\\test\\mailbox',

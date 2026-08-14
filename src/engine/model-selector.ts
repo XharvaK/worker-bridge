@@ -79,6 +79,7 @@ export class ModelSelector {
     return (
       targets.find((target) => {
         if (requested.platform && target.platformId.toLowerCase() !== requested.platform.toLowerCase()) return false;
+        if (requested.platform && target.modelBinding === 'EXPLICIT_DISCOVERED') return true;
         const aliases = [target.targetId, target.displayName, target.modelId, ...(target.aliases || [])].filter(
           (alias): alias is string => typeof alias === 'string'
         );
@@ -126,10 +127,10 @@ export class ModelSelector {
     }
 
     const discovered = await this.discoverFor(adapter);
-    if (!target.modelId) {
+    const modelId = target.modelBinding === 'EXPLICIT_DISCOVERED' ? requested?.model?.trim() : target.modelId;
+    if (!modelId) {
       throw new Error(`MODEL_SELECTION_ERROR: Target "${target.targetId}" requires an explicitly discovered model.`);
     }
-    const modelId = target.modelId;
     const discoveredModel = discovered.find((model) => model.id.toLowerCase() === modelId.toLowerCase());
     if (!discoveredModel) {
       throw new Error(
