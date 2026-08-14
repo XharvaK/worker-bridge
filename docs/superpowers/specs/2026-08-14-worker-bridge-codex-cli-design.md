@@ -69,6 +69,8 @@ The installed help evidence establishes these capabilities:
 - A prompt may be supplied as an argument or through stdin using `-`.
 - `codex debug models --bundled` renders the bundled model catalog as JSON.
 
+The installed CLI accepts `--ignore-user-config` on `codex exec` and `codex exec resume`, but rejects it for `codex debug models --bundled` both before and after the `debug` command. The catalog command is therefore a narrow, read-only exception: it MUST be invoked only as the bundled metadata command, without refresh, inference, prompt, authentication, or account access. The worker execution and resume commands remain required to use `--ignore-user-config`. If a future CLI changes the catalog command or makes the bundled command load user/project execution configuration, discovery MUST fail closed until the command can be revalidated.
+
 The local bundled catalog was read without running inference. It contained model metadata for `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.2`, and `codex-auto-review`. The catalog exposed `visibility` metadata with `list` and `hide` values, `supported_in_api` metadata, and per-profile descriptions. Supported native reasoning values varied by model. The implementation MUST discover this data at runtime and MUST NOT encode this current catalog as permanent policy.
 
 The local Codex configuration also provided the native reasoning key:
@@ -113,7 +115,7 @@ The selector remains generic. It resolves explicit targets through the same targ
 
 Codex model discovery has separate meanings:
 
-1. `codex debug models --bundled` establishes installed CLI catalog metadata.
+1. The exact read-only command `codex debug models --bundled` establishes installed CLI catalog metadata. Its lack of `--ignore-user-config` is allowed only because the installed CLI rejects that flag and `--bundled` is defined as a local bundled-catalog dump; this command MUST NOT be used for worker execution or account/runtime probing.
 2. Catalog selectability metadata establishes whether the model is user-selectable through the CLI.
 3. Invocation evidence establishes whether the current account/configuration can run the selected model now.
 
@@ -168,7 +170,7 @@ The generic process manager remains responsible for `shell: false`, safe Windows
 
 ## Codex configuration authority boundary
 
-Worker Bridge remains the authority boundary. CodexAdapter MUST NOT silently inherit user-level Codex configuration that can expand worker capabilities or change bridge-controlled execution semantics. `--ignore-user-config` is required for both initial `exec` and `exec resume` invocations.
+Worker Bridge remains the authority boundary. CodexAdapter MUST NOT silently inherit user-level Codex configuration that can expand worker capabilities or change bridge-controlled execution semantics. `--ignore-user-config` is required for both initial `exec` and `exec resume` invocations. The bundled catalog command is the only exception, and its narrow read-only behavior is verified separately as described above.
 
 Authentication remains Codex-owned through the normal authenticated CLI and `CODEX_HOME` mechanism. Worker Bridge MUST NOT extract, copy, parse, persist, or independently refresh Codex authentication material. `--ignore-user-config` controls configuration inheritance; it does not authorize credential handling by the bridge.
 
@@ -252,6 +254,7 @@ Tests use fixtures and mocks only. They cover:
 - explicit topology-changing reasoning only when metadata and the authority envelope prove it safe;
 - exact explicit reasoning acceptance and closed failure for unsupported values;
 - user-level configuration isolation through `--ignore-user-config`;
+- bundled catalog discovery uses only the verified metadata-only command because the installed CLI rejects `--ignore-user-config` for that command;
 - project configuration authority containment, including safe, capability-bearing, and unknown/unparsable configurations;
 - exact `exec` and `exec resume` argument construction;
 - unambiguous session-ID capture and closed failure for unsafe continuation;
