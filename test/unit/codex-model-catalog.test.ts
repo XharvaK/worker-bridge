@@ -80,6 +80,107 @@ describe('Codex model catalog parsing', () => {
     });
   });
 
+  it('classifies affirmative description-only automatic delegation without using the profile value', () => {
+    const catalog = parseCodexModelCatalog({
+      models: [
+        {
+          slug: 'description-only-delegator',
+          display_name: 'Description Only Delegator',
+          visibility: 'list',
+          supported_in_api: true,
+          supported_reasoning_levels: [
+            {
+              effort: 'ordinary',
+              description: 'Uses automatic delegation to split work into child tasks.',
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(catalog.models[0]?.reasoningProfiles?.[0]).toMatchObject({
+      value: 'ordinary',
+      topology: 'TOPOLOGY_CHANGING',
+    });
+  });
+
+  it('keeps negated, conflicting, and ambiguous delegation descriptions unknown', () => {
+    const catalog = parseCodexModelCatalog({
+      models: [
+        {
+          slug: 'negated-delegation',
+          display_name: 'Negated Delegation',
+          visibility: 'list',
+          supported_in_api: true,
+          supported_reasoning_levels: [
+            {
+              effort: 'negated',
+              description: 'Does not use automatic delegation; delegated work is excluded.',
+            },
+          ],
+        },
+        {
+          slug: 'conflicting-delegation',
+          display_name: 'Conflicting Delegation',
+          visibility: 'list',
+          supported_in_api: true,
+          supported_reasoning_levels: [
+            {
+              effort: 'conflicting',
+              description: 'Uses automatic delegation, but standard ordinary reasoning is required.',
+            },
+          ],
+        },
+        {
+          slug: 'ambiguous-delegation',
+          display_name: 'Ambiguous Delegation',
+          visibility: 'list',
+          supported_in_api: true,
+          supported_reasoning_levels: [
+            {
+              effort: 'ambiguous',
+              description: 'Delegated work may occur depending on context.',
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(catalog.models.map((model) => model.reasoningProfiles?.[0]?.topology)).toEqual([
+      'UNKNOWN',
+      'UNKNOWN',
+      'UNKNOWN',
+    ]);
+  });
+
+  it('fails closed when an unknown profile appears above an ordinary candidate', () => {
+    const catalog = parseCodexModelCatalog({
+      models: [
+        {
+          slug: 'unknown-above-ordinary',
+          display_name: 'Unknown Above Ordinary',
+          visibility: 'list',
+          supported_in_api: true,
+          supported_reasoning_levels: [
+            {
+              effort: 'max',
+              description: 'Standard ordinary reasoning.',
+              topology: 'ordinary',
+            },
+            {
+              effort: 'provider-defined',
+              description: 'Delegated work may occur depending on policy.',
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(() => resolveCodexReasoningProfile(catalog.models[0]!, 'highest-supported')).toThrow(
+      'REASONING_PROFILE_UNSUPPORTED'
+    );
+  });
+
   it('fails closed for unknown or unsupported reasoning topology', () => {
     const catalog = parseCodexModelCatalog(fixture);
     const luna = catalog.models.find((model) => model.id === 'gpt-5.6-luna');

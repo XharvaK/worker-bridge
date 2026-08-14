@@ -43,21 +43,68 @@ function normalizeTopologyValue(value: unknown): ReasoningTopology | undefined {
   return undefined;
 }
 
-function classifyReasoningTopology(profile: Record<string, unknown>): ReasoningTopology {
-  const explicit =
-    normalizeTopologyValue(profile.topology) ??
-    normalizeTopologyValue(profile.reasoning_topology) ??
-    normalizeTopologyValue(profile.topology_class);
-  if (explicit) return explicit;
+function classifyExplicitTopology(profile: Record<string, unknown>): ReasoningTopology | undefined {
+  const values = [profile.topology, profile.reasoning_topology, profile.topology_class].filter(
+    (value) => value !== undefined
+  );
+  if (values.length === 0) return undefined;
 
-  const description = typeof profile.description === 'string' ? profile.description.toLowerCase() : '';
-  if (description.includes('automatic delegation') || description.includes('delegated work')) {
-    return 'TOPOLOGY_CHANGING';
+  const normalized = values.map(normalizeTopologyValue);
+  if (normalized.some((topology) => topology === undefined)) return 'UNKNOWN';
+
+  const first = normalized[0];
+  return normalized.every((topology) => topology === first) ? first : 'UNKNOWN';
+}
+
+function classifyDescriptionTopology(descriptionValue: unknown): {
+  topology: ReasoningTopology;
+  hasTopologyMarker: boolean;
+} {
+  if (typeof descriptionValue !== 'string' || !descriptionValue.trim()) {
+    return { topology: 'UNKNOWN', hasTopologyMarker: false };
   }
-  if (description.includes('ordinary reasoning') || description.includes('standard reasoning')) {
-    return 'ORDINARY';
+
+  const description = descriptionValue.toLowerCase().replace(/\s+/g, ' ').trim();
+  const delegationMention =
+    /\b(?:automatic\s+delegation|delegated\s+work|automatically\s+delegat(?:e|es|ed|ing)\s+(?:work|tasks?))\b/.test(
+      description
+    );
+  const ordinaryMention = /\b(?:standard\s+ordinary|standard|ordinary)\s+reasoning\b/.test(description);
+  const hasTopologyMarker = delegationMention || ordinaryMention;
+  if (!hasTopologyMarker) return { topology: 'UNKNOWN', hasTopologyMarker: false };
+
+  const hasNegationOrUncertainty =
+    /\b(?:not|never|no|without|does\s+not|do\s+not|doesn't|don't|isn't|aren't|cannot|can't|may|might|could|possibly|potentially|depending|whether|if)\b/.test(
+      description
+    );
+  const affirmativeDelegation =
+    /\b(?:uses?|performs?|enables?|supports?|provides?|allows?)\s+(?:automatic\s+delegation|delegated\s+work)\b/.test(
+      description
+    ) ||
+    /\b(?:automatic\s+delegation|delegated\s+work)\s+(?:is|are)\s+(?:enabled|active|used|supported|available)\b/.test(
+      description
+    ) ||
+    /\bautomatically\s+delegat(?:e|es|ed|ing)\s+(?:work|tasks?)\b/.test(description);
+
+  if (hasNegationOrUncertainty || (delegationMention && ordinaryMention)) {
+    return { topology: 'UNKNOWN', hasTopologyMarker: true };
   }
-  return 'UNKNOWN';
+  if (delegationMention) {
+    return {
+      topology: affirmativeDelegation ? 'TOPOLOGY_CHANGING' : 'UNKNOWN',
+      hasTopologyMarker: true,
+    };
+  }
+  return { topology: 'ORDINARY', hasTopologyMarker: true };
+}
+
+function classifyReasoningTopology(profile: Record<string, unknown>): ReasoningTopology {
+  const explicit = classifyExplicitTopology(profile);
+  const described = classifyDescriptionTopology(profile.description);
+
+  if (explicit === 'UNKNOWN') return 'UNKNOWN';
+  if (explicit && described.hasTopologyMarker && described.topology !== explicit) return 'UNKNOWN';
+  return explicit ?? described.topology;
 }
 
 function parseReasoningProfiles(value: unknown): DiscoveredReasoningProfile[] {
