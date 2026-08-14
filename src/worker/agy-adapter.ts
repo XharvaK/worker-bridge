@@ -9,15 +9,18 @@ import { logger } from '../utils/logger.js';
 
 const execFileAsync = promisify(execFile);
 
+export const DEFAULT_AGY_PATH = 'C:\\Users\\Xharv\\AppData\\Local\\agy\\bin\\agy.exe';
+export const DEFAULT_WORKER_MODEL = 'gemini-3.7-flash-high';
+
 export class AgyAdapter {
   private agyExecutable: string;
   private workerModel: string;
   private processManager: ProcessManager;
 
-  constructor(agyExecutable: string, workerModel: string, processManager: ProcessManager) {
+  constructor(agyExecutable = DEFAULT_AGY_PATH, workerModel = DEFAULT_WORKER_MODEL, processManager?: ProcessManager) {
     this.agyExecutable = agyExecutable;
     this.workerModel = workerModel;
-    this.processManager = processManager;
+    this.processManager = processManager || new ProcessManager();
   }
 
   getExecutablePath(): string {
@@ -63,70 +66,51 @@ export class AgyAdapter {
   buildInvocationArgs(promptText: string, worktreeCwd: string, profile: AgyPermissionProfile): string[] {
     const args: string[] = [];
 
-    // Official AGY CLI syntax:
-    // Headless one-shot prompt
+    // Official AGY CLI flags:
+    // Non-interactive print mode with prompt
     args.push('-p', promptText);
 
-    // Working directory bound to isolated worktree
-    args.push('--cwd', worktreeCwd);
-
-    // Configured official worker model
+    // Exact model identifier
     args.push('--model', this.workerModel);
 
-    // Enable terminal sandbox
+    // Reasoning effort set to high for Flash High
+    args.push('--effort', 'high');
+
+    // Execution mode: built-in 'plan' vs 'accept-edits'
+    if (profile.phase === 'PLAN') {
+      args.push('--mode', 'plan');
+    } else {
+      args.push('--mode', 'accept-edits');
+    }
+
+    // Enable terminal restrictions / OS sandbox
     if (profile.sandboxed) {
       args.push('--sandbox');
     }
 
-    // Preventative Permission Controls:
-    // When in PLAN mode, forbid file writes and mutation tools
-    if (!profile.allowSourceWrites) {
-      args.push('--permission:fs:write=deny');
-      args.push('--permission:tools:write_file=deny');
-      args.push('--permission:tools:replace_file_content=deny');
-      args.push('--permission:tools:multi_replace_file_content=deny');
-    }
-
-    // Network / Browser actuation denied for headless worker
-    if (!profile.allowNetworkActuation) {
-      args.push('--permission:browser=deny');
-      args.push('--permission:network=deny');
-    }
-
-    // Explicitly prohibit git push / elevation tools
-    if (!profile.allowGitPush) {
-      args.push('--permission:git:push=deny');
-    }
-    if (!profile.allowElevation) {
-      args.push('--permission:elevation=deny');
-    }
-    if (!profile.allowSsh) {
-      args.push('--permission:ssh=deny');
-    }
+    // Explicitly add worktree directory to workspace
+    args.push('--add-dir', worktreeCwd);
 
     return args;
   }
 
   async checkAgyInstalled(): Promise<{ installed: boolean; path?: string; version?: string; error?: string }> {
     try {
-      // Check if executable is directly resolvable or in PATH
+      const isCmd = process.platform === 'win32' && /\.(bat|cmd)$/i.test(this.agyExecutable);
       const { stdout } = await execFileAsync(this.agyExecutable, ['--version'], {
         windowsHide: true,
-        shell: process.platform === 'win32' && /\.(bat|cmd)$/i.test(this.agyExecutable),
+        shell: isCmd,
       });
       return { installed: true, path: this.agyExecutable, version: stdout.trim() };
     } catch (err: any) {
-      // If direct check failed, check where.exe on Windows
       if (process.platform === 'win32') {
         try {
-          const { stdout: whereOut } = await execFileAsync('where.exe', [this.agyExecutable], { windowsHide: true });
+          const { stdout: whereOut } = await execFileAsync('where.exe', ['agy.exe', 'agy'], { windowsHide: true });
           const foundPath = whereOut.split(/\r?\n/)[0].trim();
           if (foundPath) {
             return { installed: true, path: foundPath };
           }
-        } catch {
-          // not in PATH
-        }
+        } catch {}
       }
       return {
         installed: false,
@@ -145,7 +129,7 @@ export class AgyAdapter {
     const logFilePath = this.getJobLogFilePath(jobId);
     fs.writeFileSync(
       logFilePath,
-      `=== Execution Started: ${new Date().toISOString()} ===\nPhase: ${profile.phase}\nModel: ${this.workerModel}\nWorktree: ${worktreeCwd}\nSandbox: ${profile.sandboxed}\nAllowWrites: ${profile.allowSourceWrites}\n\n`,
+      `=== Execution Started: ${new Date().toISOString()} ===\nPhase: ${profile.phase}\nModel: ${this.workerModel}\nWorktree: ${worktreeCwd}\nSandbox: ${profile.sandboxed}\nMode: ${profile.phase === 'PLAN' ? 'plan' : 'accept-edits'}\n\n`,
       'utf8'
     );
 

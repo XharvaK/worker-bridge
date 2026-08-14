@@ -3,8 +3,8 @@
   "mailboxRemote": "origin",
   "pollIntervalSeconds": 20,
   "workerRootDir": "C:\\Users\\Xharv\\Projects\\.workers",
-  "agyExecutable": "agy",
-  "workerModel": "gemini-2.5-flash",
+  "agyExecutable": "C:\\Users\\Xharv\\AppData\\Local\\agy\\bin\\agy.exe",
+  "workerModel": "gemini-3.7-flash-high",
   "pushWorkerBranches": true,
   "notificationsEnabled": true,
   "allowedProjects": {
