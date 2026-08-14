@@ -51,15 +51,15 @@ export class MailboxTransport {
       });
       return { ok: true };
     } catch (err: any) {
-      const errMsg = err.message || String(err);
-      const isConflict = errMsg.includes('CONFLICT') || errMsg.includes('Failed to merge');
+      const errMsg = (err.stdout || '') + (err.stderr || '') + (err.message || '') + String(err);
+      const isConflict = /CONFLICT|Failed to merge|could not apply|Resolve all conflicts|patch failed/i.test(errMsg);
 
       if (isConflict) {
         logger.error(`Mailbox Git conflict detected during rebase. Aborting rebase to preserve local state.`);
         try {
           await execFileAsync('git', ['-C', this.repoPath, 'rebase', '--abort'], { windowsHide: true });
         } catch {}
-        return { ok: false, conflict: true, error: `mailbox_git_conflict: ${errMsg}` };
+        return { ok: false, conflict: true, error: `mailbox_git_conflict: ${errMsg.trim()}` };
       }
 
       logger.warn(`Mailbox rebase warning: ${errMsg}`);
