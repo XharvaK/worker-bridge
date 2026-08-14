@@ -1,0 +1,83 @@
+{
+  "models": [
+    {
+      "slug": "gpt-5.6-sol",
+      "display_name": "GPT-5.6 Sol",
+      "visibility": "list",
+      "supported_in_api": true,
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Standard ordinary reasoning for quick edits.",
+          "topology": "ordinary"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum standard reasoning within the current worker.",
+          "topology": "ordinary"
+        },
+        {
+          "effort": "ultra",
+          "description": "Uses automatic delegation to split work into child tasks.",
+          "topology": "topology_changing"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-5.6-terra",
+      "display_name": "GPT-5.6 Terra",
+      "visibility": "list",
+      "supported_in_api": true,
+      "supported_reasoning_levels": [
+        {
+          "effort": "medium",
+          "description": "Standard ordinary reasoning.",
+          "topology": "ordinary"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum standard reasoning.",
+          "topology": "ordinary"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-5.6-luna",
+      "display_name": "GPT-5.6 Luna",
+      "visibility": "list",
+      "supported_in_api": true,
+      "supported_reasoning_levels": [
+        {
+          "effort": "high",
+          "description": "Reasoning metadata without a known topology marker."
+        }
+      ]
+    },
+    {
+      "slug": "codex-auto-review",
+      "display_name": "Codex Auto Review",
+      "visibility": "hide",
+      "supported_in_api": true,
+      "supported_reasoning_levels": [
+        {
+          "effort": "max",
+          "description": "Standard ordinary reasoning.",
+          "topology": "ordinary"
+        }
+      ]
+    },
+    {
+      "slug": "codex-api-disabled",
+      "display_name": "Codex API Disabled",
+      "visibility": "list",
+      "supported_in_api": false,
+      "supported_reasoning_levels": []
+    },
+    {
+      "slug": "codex-unknown-selectability",
+      "display_name": "Codex Unknown Selectability",
+      "visibility": "preview",
+      "supported_reasoning_levels": []
+    }
+  ]
+}

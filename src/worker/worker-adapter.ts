@@ -63,6 +63,16 @@ export interface OperationalFailureAnalysis {
 
 const MAX_FAILURE_EVIDENCE = 4000;
 
+export class WorkerAdapterError extends Error {
+  readonly failureClass: OperationalFailureClass;
+
+  constructor(failureClass: OperationalFailureClass, message: string) {
+    super(`${failureClass}: ${sanitizeSecrets(message)}`);
+    this.name = 'WorkerAdapterError';
+    this.failureClass = failureClass;
+  }
+}
+
 function boundEvidence(value: string): string {
   const sanitized = sanitizeSecrets(value.trim());
   if (sanitized.length <= MAX_FAILURE_EVIDENCE) return sanitized;

@@ -203,6 +203,66 @@ describe('Recovery Capsule', () => {
     expect(Buffer.byteLength(serializeRecoveryCapsule(capsule), 'utf8')).toBeLessThanOrEqual(64 * 1024);
   });
 
+  it('persists and parses Codex discovery and reasoning failure classes generically', () => {
+    const failureClasses = [
+      'MODEL_DISCOVERY_UNAVAILABLE',
+      'MODEL_NOT_SELECTABLE',
+      'REASONING_PROFILE_UNSUPPORTED',
+      'SESSION_ID_UNAVAILABLE',
+    ] as const;
+
+    for (const failureClass of failureClasses) {
+      const capsule = buildRecoveryCapsule({
+        contract: {
+          jobId: `job-${failureClass}`,
+          round: 1,
+          revision: 1,
+          role: 'WORKER',
+          originalGoal: 'Invoke explicit worker.',
+          acceptedPlan: 'Use exact discovered model.',
+          solReview: 'Preserve platform-neutral recovery.',
+          baseSha: 'abcdef1234567890',
+          executionConstraints: ['no automatic model substitution'],
+        },
+        sourceWorker: {
+          targetId: 'codex_explicit',
+          platform: 'codex',
+          model: 'gpt-5.6-sol',
+          reasoning: 'max',
+          failureClass,
+        },
+        capturedHistory: {
+          stdout: '',
+          stderr: failureClass,
+          partialResponse: '',
+          outputTruncated: false,
+        },
+        currentState: {
+          worktreePath: 'C:\\workers\\codex-failure',
+          baseSha: 'abcdef1234567890',
+          gitStatus: '',
+          gitDiff: '',
+          gitDiffStat: '',
+          diffCheck: 'PASS',
+          filesChanged: [],
+          bridgeVerification: {},
+          incompleteOperations: [failureClass],
+        },
+        recoveryDirective: {
+          provenComplete: [],
+          appearsIncomplete: ['worker invocation'],
+          knownFailures: [failureClass],
+          remainingWork: ['recover explicitly'],
+          mustNotRepeatBlindly: ['substitute a different model'],
+          instruction: 'Preserve exact failure evidence.',
+        },
+      });
+
+      const parsed = parseRecoveryCapsule(serializeRecoveryCapsule(capsule), `job-${failureClass}`);
+      expect(parsed?.sourceWorker.failureClass).toBe(failureClass);
+    }
+  });
+
   it('preserves an implementation worktree when quota fails after source effects', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'recovery-worktree-'));
     tempRoots.push(root);
