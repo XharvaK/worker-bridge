@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import { PlanResult } from '../types.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { isWorkingTreeClean } from '../git/repo-guard.js';
@@ -90,7 +91,24 @@ CRITICAL OPERATIONAL RULES
         };
       }
 
-      const planText = runResult.stdout.trim() || 'Plan generated successfully (empty stdout). Check logs for details.';
+      let planText = runResult.stdout.trim();
+
+      // Extract plan artifact content if AGY created a brain plan.md artifact
+      const match = planText.match(/\[(?:plan\.md|implementation_plan\.md)\]\((?:file:\/\/\/)?([^)]+)\)/i);
+      if (match && match[1]) {
+        const artifactPath = decodeURIComponent(match[1].replace(/^file:\/\/\//i, ''));
+        if (fs.existsSync(artifactPath)) {
+          try {
+            planText = fs.readFileSync(artifactPath, 'utf8').trim();
+          } catch (err) {
+            logger.debug(`Could not read plan artifact from ${artifactPath}: ${String(err)}`);
+          }
+        }
+      }
+
+      if (!planText) {
+        planText = 'Plan generated successfully (empty stdout). Check logs for details.';
+      }
 
       return {
         jobId,

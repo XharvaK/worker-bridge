@@ -66,7 +66,7 @@ export class AgyAdapter {
   buildInvocationArgs(promptText: string, worktreeCwd: string, profile: AgyPermissionProfile): string[] {
     const args: string[] = [];
 
-    // Official AGY CLI flags:
+    // Official AGY 1.1.13 CLI flags:
     // Non-interactive print mode with prompt
     args.push('-p', promptText);
 
@@ -137,6 +137,7 @@ export class AgyAdapter {
 
     logger.info(`Invoking official AGY worker for job ${jobId} (Model: ${this.workerModel}, Phase: ${profile.phase}) in ${worktreeCwd}`);
 
+    // Child process CWD is strictly bound to the isolated worktree
     const result = await this.processManager.run(jobId, {
       executable: this.agyExecutable,
       args,
