@@ -255,6 +255,29 @@ describe('ModelSelector & target policy invariants', () => {
     expect(byPlatform).toMatchObject({ targetId: 'codex_explicit', platform: 'codex', modelId: 'gpt-5' });
   });
 
+  it('prefers a same-platform fixed model before a dynamic target', async () => {
+    const config = makeConfig({
+      dynamic_target: {
+        targetId: 'dynamic_target',
+        platformId: 'fake-a',
+        displayName: 'Dynamic Target',
+        reasoning: { strategy: 'highest-supported' },
+        explicitOnly: true,
+        modelBinding: 'EXPLICIT_DISCOVERED',
+      },
+      fixed_target: target('fixed_target', 'fake-a', 'fixed-model'),
+    }, { PLANNER: [] });
+    const registry = new AdapterRegistry();
+    registry.register(new FakeAdapter('fake-a', ['fixed-model', 'dynamic-model']));
+    const selector = new ModelSelector(registry, config);
+
+    const fixed = await selector.resolveSelection({ platform: 'fake-a', model: 'fixed-model' }, 'PLANNER');
+    const dynamic = await selector.resolveSelection({ platform: 'fake-a', model: 'dynamic-model' }, 'PLANNER');
+
+    expect(fixed).toMatchObject({ targetId: 'fixed_target', modelId: 'fixed-model' });
+    expect(dynamic).toMatchObject({ targetId: 'dynamic_target', modelId: 'dynamic-model' });
+  });
+
   it('normalizes a legacy mistaken Gemini Flash reference to the configured 3.7 target', async () => {
     const config = validateConfig({
       mailboxRepoPath: 'C:\\test\\mailbox',

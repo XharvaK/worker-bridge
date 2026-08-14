@@ -76,16 +76,24 @@ export class ModelSelector {
     const rawModel = normalizeLegacyGeminiReference(requested.model?.trim() || '');
     if (!rawModel) return null;
     const normalized = this.normalizeAliasString(rawModel);
-    return (
-      targets.find((target) => {
-        if (requested.platform && target.platformId.toLowerCase() !== requested.platform.toLowerCase()) return false;
-        if (requested.platform && target.modelBinding === 'EXPLICIT_DISCOVERED') return true;
-        const aliases = [target.targetId, target.displayName, target.modelId, ...(target.aliases || [])].filter(
-          (alias): alias is string => typeof alias === 'string'
-        );
-        return aliases.some((alias) => this.normalizeAliasString(alias) === normalized);
-      }) || null
+    const matchesRequestedModel = (target: WorkerTargetConfig): boolean => {
+      const aliases = [target.targetId, target.displayName, target.modelId, ...(target.aliases || [])].filter(
+        (alias): alias is string => typeof alias === 'string'
+      );
+      return aliases.some((alias) => this.normalizeAliasString(alias) === normalized);
+    };
+    const matchesPlatform = (target: WorkerTargetConfig): boolean =>
+      !requested.platform || target.platformId.toLowerCase() === requested.platform.toLowerCase();
+
+    const fixedMatch = targets.find(
+      (target) => matchesPlatform(target) && target.modelBinding !== 'EXPLICIT_DISCOVERED' && matchesRequestedModel(target)
     );
+    if (fixedMatch) return fixedMatch;
+
+    return targets.find(
+      (target) => matchesPlatform(target) &&
+        (matchesRequestedModel(target) || !!requested.platform && target.modelBinding === 'EXPLICIT_DISCOVERED')
+    ) || null;
   }
 
   private async discoverFor(adapter: ReturnType<AdapterRegistry['get']>): Promise<DiscoveredModel[]> {
