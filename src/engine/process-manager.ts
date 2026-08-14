@@ -10,6 +10,7 @@ export interface ProcessRunOptions {
   executable: string;
   args: string[];
   cwd: string;
+  stdinText?: string;
   env?: Record<string, string>;
   timeoutSeconds?: number;
   maxOutputBytes?: number;
@@ -106,6 +107,10 @@ export class ProcessManager {
         windowsHide: true,
         shell: false,
       });
+
+      if (options.stdinText !== undefined) {
+        child.stdin?.end(options.stdinText);
+      }
 
       const pid = child.pid || null;
       if (pid) {

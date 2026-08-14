@@ -3,6 +3,22 @@ import * as path from 'node:path';
 import { ProcessManager } from '../../src/engine/process-manager.js';
 
 describe('ProcessManager bounded evidence capture', () => {
+  it('delivers exact stdin text, closes stdin, and preserves bounded output', async () => {
+    const manager = new ProcessManager();
+    const result = await manager.run('stdin-delivery-test', {
+      executable: process.execPath,
+      args: ['-e', "let input=''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => process.stdout.write(JSON.stringify({ input, ended: true })));"],
+      cwd: process.cwd(),
+      stdinText: 'bounded prompt',
+      timeoutSeconds: 10,
+      maxOutputBytes: 128,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.outputTruncated).toBe(false);
+    expect(JSON.parse(result.stdout)).toEqual({ input: 'bounded prompt', ended: true });
+  });
+
   it('retains bounded beginning/end output and reports truncation', async () => {
     const manager = new ProcessManager();
     const result = await manager.run('bounded-output-test', {

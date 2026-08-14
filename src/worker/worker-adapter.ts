@@ -20,6 +20,9 @@ export interface WorkerAdapter {
   readonly platformId: string;
   readonly supportsCrossModelSessionContinuation?: boolean;
 
+  /** Validate adapter-specific authority conditions before execution. */
+  validateExecutionContext?(request: WorkerInvocationRequest): Promise<void>;
+
   /**
    * Inspect the platform's local installation and environment.
    */
