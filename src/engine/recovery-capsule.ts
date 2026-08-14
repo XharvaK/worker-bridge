@@ -175,6 +175,7 @@ export function serializeRecoveryCapsule(capsule: RecoveryCapsule): string {
       targetId: boundText(capsule.sourceWorker.targetId, 500) || undefined,
       platform: boundText(capsule.sourceWorker.platform, 500),
       model: boundText(capsule.sourceWorker.model, 500),
+      reasoning: boundText(capsule.sourceWorker.reasoning, 500) || undefined,
       sessionId: boundText(capsule.sourceWorker.sessionId, 500) || undefined,
       failureClass: capsule.sourceWorker.failureClass,
       retryAt: boundText(capsule.sourceWorker.retryAt, 500) || undefined,

@@ -166,11 +166,14 @@ describe('Recovery Capsule', () => {
         acceptedPlan: 'x'.repeat(20000),
         solReview: 'x'.repeat(20000),
         baseSha: 'abcdef1234567890',
+        executionMode: 'WORKTREE_WRITE',
         executionConstraints: Array.from({ length: 64 }, () => 'x'.repeat(2000)),
       },
       sourceWorker: {
         platform: 'fake',
         model: 'fake-model',
+        reasoning: 'max',
+        sessionId: 'session-large',
         requestPrompt: 'x'.repeat(20000),
       },
       capturedHistory: {
@@ -200,7 +203,12 @@ describe('Recovery Capsule', () => {
       },
     });
 
-    expect(Buffer.byteLength(serializeRecoveryCapsule(capsule), 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    const serialized = serializeRecoveryCapsule(capsule);
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(parseRecoveryCapsule(serialized, 'job-capsule-large')).toMatchObject({
+      contract: { executionMode: 'WORKTREE_WRITE' },
+      sourceWorker: { reasoning: 'max', sessionId: 'session-large' },
+    });
   });
 
   it('persists and parses Codex discovery and reasoning failure classes generically', () => {
