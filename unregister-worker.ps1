@@ -1,13 +1,14 @@
 <#
 .SYNOPSIS
-    Unregisters the Gemini Worker Bridge Windows Scheduled Task.
+    Unregisters the Worker Bridge Windows Scheduled Task.
 #>
 
-$TaskName = "GeminiWorkerBridge"
+$TaskName = "WorkerBridge"
 
+Write-Host "Unregistering Scheduled Task: $TaskName..." -ForegroundColor Cyan
 try {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
-    Write-Host "Scheduled Task '$TaskName' has been unregistered." -ForegroundColor Green
+    Write-Host "Worker Bridge scheduled task removed successfully." -ForegroundColor Green
 } catch {
-    Write-Host "Scheduled Task '$TaskName' was not found or already unregistered." -ForegroundColor Yellow
+    Write-Host "Scheduled task '$TaskName' was not registered or already removed." -ForegroundColor Yellow
 }

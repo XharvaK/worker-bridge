@@ -8,6 +8,12 @@ if (args.includes('--version')) {
   process.exit(0);
 }
 
+if (args.includes('models')) {
+  console.log('gemini-3.7-flash-high\tGemini 3.7 Flash High');
+  console.log('claude-opus-4-6-thinking\tClaude Opus 4.6 Thinking');
+  process.exit(0);
+}
+
 const mode = process.env.MOCK_AGY_MODE || 'success';
 
 if (mode === 'violate_plan') {

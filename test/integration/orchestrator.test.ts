@@ -109,6 +109,10 @@ describe('Orchestrator End-to-End Workflow', () => {
       baseSha,
       requestedPhase: 'PLAN',
       revision: 1,
+      workerSelection: {
+        platform: 'antigravity',
+        model: 'gemini-3.7-flash-high',
+      },
       createdAt: new Date().toISOString(),
     };
 

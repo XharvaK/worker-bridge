@@ -1,13 +1,14 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { JobSpec, JobStatus } from '../types.js';
+import { WorkJob, JobStatus, RecoveryCapsule } from '../types.js';
 import { parseJobSpec, formatStatusJson } from './parser.js';
 import { logger } from '../utils/logger.js';
+import { serializeRecoveryCapsule } from '../engine/recovery-capsule.js';
 
 export interface MailboxJobEntry {
   jobId: string;
   jobDir: string;
-  spec: JobSpec | null;
+  spec: WorkJob | null;
   parseError?: string;
   status: JobStatus | null;
 }
@@ -27,6 +28,15 @@ export class MailboxSyncer {
     return path.join(this.getJobsDir(), jobId);
   }
 
+  getJobRoundsDir(jobId: string): string {
+    return path.join(this.getJobDir(jobId), 'rounds');
+  }
+
+  getRoundDir(jobId: string, roundNumber: number): string {
+    const formattedRound = roundNumber.toString().padStart(3, '0');
+    return path.join(this.getJobRoundsDir(jobId), formattedRound);
+  }
+
   async listJobs(): Promise<MailboxJobEntry[]> {
     const jobsDir = this.getJobsDir();
     if (!fs.existsSync(jobsDir)) {
@@ -43,7 +53,7 @@ export class MailboxSyncer {
       const jobJsonPath = path.join(jobDir, 'job.json');
       const statusJsonPath = path.join(jobDir, 'status.json');
 
-      let spec: JobSpec | null = null;
+      let spec: WorkJob | null = null;
       let parseError: string | undefined;
       let status: JobStatus | null = null;
 
@@ -104,24 +114,59 @@ export class MailboxSyncer {
     fs.writeFileSync(filePath, content, 'utf8');
   }
 
+  async writeRoundFile(jobId: string, roundNumber: number, filename: string, content: string): Promise<void> {
+    const roundDir = this.getRoundDir(jobId, roundNumber);
+    if (!fs.existsSync(roundDir)) {
+      fs.mkdirSync(roundDir, { recursive: true });
+    }
+    const filePath = path.join(roundDir, filename);
+    fs.writeFileSync(filePath, content, 'utf8');
+  }
+
+  async readRoundFile(jobId: string, roundNumber: number, filename: string): Promise<string | null> {
+    const filePath = path.join(this.getRoundDir(jobId, roundNumber), filename);
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    try {
+      return fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      return null;
+    }
+  }
+
   async readJobGoal(jobId: string): Promise<string | null> {
+    const brief = await this.readJobFile(jobId, 'brief.md');
+    if (brief) return brief;
     return this.readJobFile(jobId, 'goal.md');
   }
 
-  async readJobPlan(jobId: string): Promise<string | null> {
+  async readJobPlan(jobId: string, round = 1): Promise<string | null> {
+    const roundPlan = await this.readRoundFile(jobId, round, 'worker-response.md');
+    if (roundPlan) return roundPlan;
     return this.readJobFile(jobId, 'plan.md');
   }
 
-  async readJobReview(jobId: string): Promise<string | null> {
+  async readJobReview(jobId: string, round = 1): Promise<string | null> {
+    const roundReview = await this.readRoundFile(jobId, round, 'sol-review.md');
+    if (roundReview) return roundReview;
     return this.readJobFile(jobId, 'review.md');
   }
 
-  async writeJobPlan(jobId: string, planContent: string): Promise<void> {
+  async writeJobPlan(jobId: string, planContent: string, round = 1): Promise<void> {
     await this.writeJobFile(jobId, 'plan.md', planContent);
+    await this.writeRoundFile(jobId, round, 'worker-response.md', planContent);
   }
 
-  async writeJobResult(jobId: string, resultContent: string): Promise<void> {
+  async writeJobResult(jobId: string, resultContent: string, round = 1): Promise<void> {
     await this.writeJobFile(jobId, 'result.md', resultContent);
+    await this.writeRoundFile(jobId, round, 'worker-response.md', resultContent);
+  }
+
+  async writeRecoveryCapsule(jobId: string, round: number, capsule: RecoveryCapsule): Promise<string> {
+    const filename = 'recovery-capsule.json';
+    await this.writeRoundFile(jobId, round, filename, serializeRecoveryCapsule(capsule));
+    return path.join(this.getRoundDir(jobId, round), filename);
   }
 
   async writeJobStatus(jobId: string, status: JobStatus): Promise<void> {

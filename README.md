@@ -1,104 +1,95 @@
-# Gemini Worker Bridge (`gemini-worker-bridge`)
+# Worker Bridge (`worker-bridge`)
 
-A lightweight, secure, local development bridge connecting **ChatGPT / Sol** (Architect & Adversarial Reviewer) to **Google Antigravity / Gemini Flash High** (Headless Implementation Worker) via a private GitHub mailbox repository, with **zero Codex quota use**.
-
----
-
-## Key Principles & Guardrails
-
-1. **Doc is not the message bus**: Asynchronous handoffs are managed automatically via the GitHub mailbox repository.
-2. **Zero Codex quota**: All implementation work is routed to the official Antigravity CLI (`agy`) using existing authenticated Google quota.
-3. **Official Antigravity CLI Substrate**: Targets the official standalone `agy` CLI (`-p`, `--cwd`, `--model`, `--sandbox`, fine-grained permissions) rather than IDE-internal interfaces (`agentapi.bat`).
-4. **Antigravity Permissions as Real Tool Boundary**:
-   - **PLAN Mode**: Preventative write denial (`--permission:fs:write=deny`, tools write denied) + detached disposable worktree + pre/post index check.
-   - **IMPLEMENT Mode**: Filesystem writes strictly scoped to the isolated worker worktree. Elevation, SSH, deployment, and git push tools are strictly denied.
-5. **AGY Has No Git Push Authority**: AGY implementation authority ends inside the isolated worktree. The **Bridge owns Git commits and pushes**, ensuring model output is not source promotion authority.
-6. **Authoritative Bridge Test Verification**: `IMPLEMENTATION_READY` is granted exclusively on bridge-observed test execution. If the model claims tests pass but bridge execution fails, the state transitions to `FAILED`.
-7. **Interrupted Means Preserve Evidence**: On bridge crash or restart, in-flight jobs become `INTERRUPTED` without blind re-execution. The worktree, branch, logs, and modified files are preserved for inspection.
-8. **No Auto-Resolution of Semantic Mailbox Conflicts**: If a Git rebase conflict occurs on the mailbox, the bridge aborts the rebase, preserves local state, marks the job `BLOCKED` (`mailbox_git_conflict`), and requests human/Sol resolution.
-9. **Network Boundary Clarity**: The Bridge directly performs network operations only for configured GitHub mailbox/repo transport. AGY communicates with Google's Antigravity service via its authenticated CLI substrate. Tool-level web access is governed by AGY permission policies.
-10. **Zero Antigravity Credential Handling**: The bridge never reads, copies, logs, or persists Antigravity authentication tokens.
+A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGPT / Architect & Adversarial Reviewer) to multi-platform headless AI workers (**Google Antigravity** and **OpenCode**) via a private GitHub mailbox repository.
 
 ---
 
-## Directory Structure
+## Core Architecture & Law
 
 ```
-gemini-worker-bridge/
-├── config.example.json            # Template for local config
-├── register-worker.ps1            # User Scheduled Task installer (no admin)
-├── unregister-worker.ps1          # Scheduled Task uninstaller
-├── src/
-│   ├── index.ts                   # CLI entrypoint (start, run-once, status, cancel)
-│   ├── config.ts                  # Configuration and allowlist manager
-│   ├── types.ts                   # Core interfaces and schema definitions
-│   ├── engine/
-│   │   ├── orchestrator.ts        # Master polling and dispatch loop
-│   │   ├── ledger.ts              # Persistent idempotency and crash ledger
-│   │   └── process-manager.ts     # Process spawning, tree kill, timeouts
-│   ├── worker/
-│   │   ├── agy-adapter.ts         # Official Antigravity CLI invocation adapter
-│   │   ├── plan-worker.ts         # Preventative read-only PLAN worker
-│   │   └── implement-worker.ts    # Authoritative test-verified IMPLEMENT worker
-│   ├── git/
-│   │   ├── worktree.ts            # Git worktree lifecycle management
-│   │   └── repo-guard.ts          # Branch protection and SHA validation
-│   ├── mailbox/
-│   │   ├── parser.ts              # Job schema parsing & validation
-│   │   ├── transport.ts           # Mailbox git fetch/pull/rebase/push (safe abort on conflict)
-│   │   └── syncer.ts              # Mailbox artifact reader/writer
-│   └── utils/
-│       ├── logger.ts              # Redacted structured logger
-│       ├── sanitizer.ts           # Token and secret scrubber
-│       └── notifier.ts            # Windows Toast notification helper
-└── test/                          # Unit and integration test suites
+                   DOC + SOL
+                      |
+                      v
+                WORKER BRIDGE
+                 /          \
+                /            \
+      AntigravityAdapter    OpenCodeAdapter
+             |                    |
+             v                    v
+            AGY                OpenCode CLI
+             |                    |
+             v                    v
+       selected model        selected model
 ```
+
+1. **Workflow Ownership**: The JOB belongs to Sol/Doc. Worker platforms and models are replaceable execution substrates.
+2. **Core Invariants**:
+   - `WORKER PLATFORM != WORKFLOW`
+   - `MODEL != AUTHORITY`
+   - `MODEL OUTPUT != OWNER APPROVAL`
+   - `MODEL OUTPUT != SOURCE PROMOTION AUTHORITY`
+   - `GITHUB MAILBOX != AUTHORITY`
+   - `LOCAL BRIDGE CONFIG OWNS LOCAL EXECUTION AUTHORITY`
+   - `READ-ONLY DISPATCH != WRITE AUTHORITY`
+3. **Owner Approval Gate**:
+   - `READ_ONLY` mode (`plan`, `design`, `investigate`, `review`, `audit`) is authorized directly by initial dispatch.
+   - `WORKTREE_WRITE` mode (`implement`, `fix`) strictly requires explicit owner approval (`ownerApproval: { approved: true }`).
+4. **Highest Reasoning Default**:
+   - Models default to their highest supported reasoning profile (`--effort high` for AGY, `--variant max` / `high` for OpenCode) unless explicitly overridden.
+5. **Opus Policy**:
+   - Claude Opus (`claude-opus-4-6-thinking`) is strictly **`EXPLICIT_ONLY`** to preserve quota. Excluded from all automatic rankings and fallbacks.
+6. **Authoritative Bridge Verification**:
+   - `IMPLEMENTATION_READY` is granted exclusively on bridge-observed test execution and diff checks. Model prose is never accepted as verification evidence.
+
+---
+
+## Supported Worker Platforms
+
+### 1. Antigravity (`agy`)
+- CLI: Official `agy.exe` (`1.1.13+`)
+- Execution: `-p <prompt> --model <model> --effort high --mode <plan|accept-edits> --sandbox --add-dir <cwd>`
+- Models: `gemini-3.7-flash-high`, `gemini-3.6-flash-high`, `gemini-3.1-pro-high`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking` (explicit only).
+
+### 2. OpenCode (`opencode`)
+- CLI: Official OpenCode CLI (`1.18.15+`)
+- Execution: `opencode run "<prompt>" --dir "<cwd>" -m "<provider/model>" --variant "<variant>" --format json --auto`
+- Models: `opencode/deepseek-v4-flash-free` (variant: `max`), `opencode/hy3-free` (variant: `high`), `opencode/laguna-s-2.1-free` (variant: `high`), `opencode/nemotron-3.5-lightning-free`, `opencode/nemotron-3-ultra-free`, `mistral/*`.
+
+---
+
+## Rankings
+
+### Locked Planner Ranking (Read-Only: plan / investigate / review)
+1. `Gemini Flash 3.7 High` (`antigravity`)
+2. `DeepSeek V4 Flash Max` (`opencode`)
+3. `HY3 High` (`opencode`)
+4. `Laguna S 2.1 High` (`opencode`)
+5. `Nemotron 3 Ultra` (`opencode`)
+6. `Nemotron 3.5 Lightning` (`opencode`)
+
+### Locked Worker Ranking (Source-Writing: implement / fix)
+1. `Gemini Flash 3.7 High` (`antigravity`)
+2. `Nemotron 3.5 Lightning` (`opencode`)
+3. `DeepSeek V4 Flash Max` (`opencode`)
+4. `HY3 High` (`opencode`)
+5. `Laguna S 2.1 High` (`opencode`)
+6. `Nemotron 3 Ultra` (`opencode`)
 
 ---
 
 ## Quick Setup
 
-1. **Official AGY CLI**:
-   - Ensure the official Antigravity CLI (`agy`) is installed and authenticated.
-   - Run `agy models` to discover available model identifiers (e.g. `gemini-2.5-flash` or `gemini-3.7-flash`).
+1. **Configure the Bridge**:
+   - Copy `config.example.json` to `config.json`.
+   - Update repository paths in `config.json`.
 
-2. **Clone or create your private mailbox repository on GitHub**:
-   - Repository name: `gemini-worker-mailbox` (Private)
-   - Clone locally to `C:\Users\Xharv\Projects\gemini-worker-mailbox`.
-
-3. **Configure the Bridge**:
-   - Copy `config.example.json` to `config.json`:
-     ```bash
-     copy config.example.json config.json
-     ```
-   - Verify paths in `config.json`:
-     ```json
-     {
-       "mailboxRepoPath": "C:\\Users\\Xharv\\Projects\\gemini-worker-mailbox",
-       "workerRootDir": "C:\\Users\\Xharv\\Projects\\.workers",
-       "agyExecutable": "agy",
-       "workerModel": "gemini-2.5-flash",
-       "pushWorkerBranches": true,
-       "notificationsEnabled": true,
-       "allowedProjects": {
-         "ashley": {
-           "path": "C:\\Users\\Xharv\\Projects\\composer-assistant",
-           "allowed": true,
-           "defaultBranch": "master",
-           "allowPushWorkerBranch": true,
-           "testCommand": "npm test"
-         }
-       }
-     }
-     ```
-
-4. **Build & Test the Project**:
+2. **Build & Test**:
    ```bash
    npm run build
    npm test
    ```
 
-5. **Start the Bridge**:
+3. **Start the Bridge**:
    ```bash
    npm start
    ```

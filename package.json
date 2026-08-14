@@ -1,21 +1,24 @@
 {
-  "name": "gemini-worker-bridge",
-  "version": "1.0.0",
-  "description": "Safe headless implementation worker bridge connecting ChatGPT/Sol to Antigravity Gemini Flash High via GitHub mailbox",
+  "name": "worker-bridge",
+  "version": "2.0.0",
+  "description": "Platform-agnostic headless AI worker bridge connecting Sol/Doc to Antigravity and OpenCode via GitHub mailbox",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
+    "worker-bridge": "dist/index.js",
     "gemini-worker-bridge": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
     "start": "node dist/index.js start",
-    "test": "vitest run",
+    "test": "vitest run --exclude test/integration/real-smoke.test.ts",
+    "test:real-smoke": "vitest run test/integration/real-smoke.test.ts",
     "test:watch": "vitest"
   },
   "keywords": [
     "antigravity",
+    "opencode",
     "gemini",
     "worker",
     "bridge",

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { AgyAdapter, DEFAULT_AGY_PATH } from '../../src/worker/agy-adapter.js';
+import * as path from 'node:path';
+import { AgyAdapter } from '../../src/worker/agy-adapter.js';
 import { ProcessManager } from '../../src/engine/process-manager.js';
 
 describe('AgyAdapter & Official AGY CLI Invariants', () => {
@@ -57,13 +58,13 @@ describe('AgyAdapter & Official AGY CLI Invariants', () => {
     expect(args).toContain('C:\\worktree\\imp');
   });
 
-  it('detects and verifies the installed AGY CLI binary on the host', async () => {
-    const adapter = new AgyAdapter(DEFAULT_AGY_PATH, 'gemini-3.7-flash-high', processManager);
+  it('detects and verifies the local mock AGY CLI binary without provider access', async () => {
+    const adapter = new AgyAdapter(path.resolve('test/fixtures/mock-agy.cmd'), 'gemini-3.7-flash-high', processManager);
     const check = await adapter.checkAgyInstalled();
 
     expect(check.installed).toBe(true);
     expect(check.version).toBeDefined();
-    expect(check.version).toContain('1.1.13');
+    expect(check.version).toContain('1.0.0-mock');
   });
 
   it('reports AGY_CLI_MISSING clearly when executable is not present', async () => {

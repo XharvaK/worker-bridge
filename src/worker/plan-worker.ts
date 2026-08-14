@@ -1,17 +1,17 @@
 import * as fs from 'node:fs';
-import { PlanResult } from '../types.js';
+import { PlanResult, RecoveryCapsule } from '../types.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { isWorkingTreeClean } from '../git/repo-guard.js';
-import { AgyAdapter } from './agy-adapter.js';
+import { WorkerAdapter } from './worker-adapter.js';
 import { logger } from '../utils/logger.js';
 
 export class PlanWorker {
   private worktreeManager: WorktreeManager;
-  private agyAdapter: AgyAdapter;
+  private defaultAdapter: WorkerAdapter;
 
-  constructor(worktreeManager: WorktreeManager, agyAdapter: AgyAdapter) {
+  constructor(worktreeManager: WorktreeManager, defaultAdapter: WorkerAdapter) {
     this.worktreeManager = worktreeManager;
-    this.agyAdapter = agyAdapter;
+    this.defaultAdapter = defaultAdapter;
   }
 
   async execute(
@@ -20,24 +20,38 @@ export class PlanWorker {
     repoPath: string,
     baseSha: string,
     goalText: string,
-    timeoutSeconds = 900
+    timeoutSeconds = 900,
+    adapterOverride?: WorkerAdapter,
+    modelOverride?: string,
+    variantOverride?: string,
+    sessionId?: string,
+    roundNumber = 1,
+    recoveryCapsule?: RecoveryCapsule
   ): Promise<PlanResult> {
-    logger.info(`Starting PLAN worker for job ${jobId} (Project: ${projectId}, Base: ${baseSha})`);
+    const adapter = adapterOverride || this.defaultAdapter;
+    const model = modelOverride || '';
+    logger.info(
+      `Starting READ_ONLY round ${roundNumber} worker for job ${jobId} (Platform: ${adapter.platformId}, Model: ${model || 'default'}, Base: ${baseSha})`
+    );
 
     let worktreePath = '';
     try {
       // 1. Check CLI availability
-      const cliCheck = await this.agyAdapter.checkAgyInstalled();
+      const cliCheck = await adapter.inspectEnvironment();
       if (!cliCheck.installed) {
         return {
           jobId,
           projectId,
           baseSha,
-          model: this.agyAdapter.getModel(),
+          platform: adapter.platformId,
+          model,
+          variant: variantOverride,
+          sessionId,
           planText: '',
           exitCode: 1,
           clean: true,
           mutatedFiles: [],
+          failureClass: 'CLI_MISSING',
           error: cliCheck.error,
         };
       }
@@ -46,10 +60,10 @@ export class PlanWorker {
       worktreePath = await this.worktreeManager.createPlanWorktree(repoPath, projectId, jobId, baseSha);
 
       const promptText = `
-You are an autonomous implementation planning worker for project: "${projectId}".
+You are an autonomous technical analysis and planning worker on platform "${adapter.platformId}" for project: "${projectId}".
 
 ==================================================
-IMPLEMENTATION GOAL
+IMPLEMENTATION GOAL / BRIEF
 ==================================================
 ${goalText}
 
@@ -58,40 +72,59 @@ CRITICAL OPERATIONAL RULES
 ==================================================
 1. INVESTIGATE the repository codebase to understand all relevant architecture, dependencies, and file structures.
 2. PRODUCE a comprehensive, code-aware implementation plan.
-3. DO NOT modify, add, or delete ANY source files in the repository. PLAN mode is strictly READ-ONLY.
-4. Output your final implementation plan in structured Markdown format.
+3. DO NOT modify, add, or delete ANY source files in the repository. This phase is strictly READ-ONLY.
+4. Output your final response in structured Markdown format.
+${recoveryCapsule ? `
+
+==================================================
+5. RECOVERY CAPSULE
+==================================================
+This is a recovery round. Use the bridge-provided capsule as evidence of the prior attempt. Continue from observed facts and do not treat worker claims as authority.
+${JSON.stringify(recoveryCapsule)}
+` : ''}
 `.trim();
 
-      // 3. Preventative permission profile (Deny file writes, deny network, enable sandbox)
-      const planProfile = AgyAdapter.getPlanProfile();
-
-      const runResult = await this.agyAdapter.invokeAgent(
+      // 3. Execute Worker
+      const roundResult = await adapter.invokeWorker({
         jobId,
-        worktreePath,
-        planProfile,
+        roundNumber,
+        executionMode: 'READ_ONLY',
+        worktreeCwd: worktreePath,
         promptText,
-        timeoutSeconds
-      );
+        modelId: model,
+        variant: variantOverride,
+        sessionId,
+        timeoutSeconds,
+      });
 
       // 4. Mechanical Read-Only Assertion: Verify no files were modified
       const statusCheck = await isWorkingTreeClean(worktreePath);
 
       if (!statusCheck.clean) {
-        logger.error(`PLAN mode violation for job ${jobId}: modified files detected!`, { files: statusCheck.modifiedFiles });
+        logger.error(`READ_ONLY mode violation for job ${jobId}: modified files detected!`, {
+          files: statusCheck.modifiedFiles,
+        });
         return {
           jobId,
           projectId,
           baseSha,
-          model: this.agyAdapter.getModel(),
+          platform: adapter.platformId,
+          model: roundResult.modelId,
+          variant: roundResult.variant,
+          sessionId: roundResult.platformSessionId || sessionId,
           planText: '',
           exitCode: 1,
           clean: false,
           mutatedFiles: statusCheck.modifiedFiles,
-          error: `PLAN mode violated read-only constraint: repository was modified by worker (${statusCheck.modifiedFiles.join(', ')})`,
+          failureClass: 'PERMISSION_BLOCKED',
+          retryAt: roundResult.retryAt,
+          rawFailureEvidence: roundResult.rawFailureEvidence,
+          evidence: roundResult.evidence,
+          error: `PLAN mode violated read-only constraint: READ_ONLY mode repository was modified by worker (${statusCheck.modifiedFiles.join(', ')})`,
         };
       }
 
-      let planText = runResult.stdout.trim();
+      let planText = roundResult.responseText.trim();
 
       // Extract plan artifact content if AGY created a brain plan.md artifact
       const match = planText.match(/\[(?:plan\.md|implementation_plan\.md)\]\((?:file:\/\/\/)?([^)]+)\)/i);
@@ -114,24 +147,38 @@ CRITICAL OPERATIONAL RULES
         jobId,
         projectId,
         baseSha,
-        model: this.agyAdapter.getModel(),
+        platform: adapter.platformId,
+        model: roundResult.modelId,
+        variant: roundResult.variant,
+        sessionId: roundResult.platformSessionId || sessionId,
         planText,
-        exitCode: runResult.exitCode,
+        exitCode: roundResult.exitCode,
         clean: true,
         mutatedFiles: [],
-        error: runResult.exitCode !== 0 ? (runResult.stderr.trim() || `AGY process exited with code ${runResult.exitCode}`) : undefined,
+        failureClass: roundResult.failureClass,
+        retryAt: roundResult.retryAt,
+        rawFailureEvidence: roundResult.rawFailureEvidence,
+        evidence: roundResult.evidence,
+        error:
+          roundResult.exitCode !== 0
+            ? roundResult.rawStderr?.trim() || `${adapter.platformId} process exited with code ${roundResult.exitCode}`
+            : undefined,
       };
     } catch (err: any) {
-      logger.error(`Exception during PLAN execution for job ${jobId}: ${err.message || String(err)}`);
+      logger.error(`Exception during READ_ONLY execution for job ${jobId}: ${err.message || String(err)}`);
       return {
         jobId,
         projectId,
         baseSha,
-        model: this.agyAdapter.getModel(),
+        platform: adapter.platformId,
+        model,
+        variant: variantOverride,
+        sessionId,
         planText: '',
         exitCode: 1,
         clean: false,
         mutatedFiles: [],
+        failureClass: 'PROCESS_FAILED',
         error: `Exception during plan generation: ${err.message || String(err)}`,
       };
     } finally {

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import * as path from 'node:path';
 import { ConfigManager } from './config.js';
 import { Orchestrator } from './engine/orchestrator.js';
 import { Ledger } from './engine/ledger.js';
@@ -39,7 +38,7 @@ async function main() {
   const orchestrator = new Orchestrator(configManager);
 
   if (command === 'start') {
-    logger.info('Starting Gemini Worker Bridge daemon...');
+    logger.info('Starting Worker Bridge daemon (Antigravity & OpenCode)...');
 
     const shutdown = () => {
       logger.info('Received shutdown signal. Stopping gracefully...');
@@ -59,16 +58,16 @@ async function main() {
     process.exit(0);
   } else if (command === 'status') {
     const ledger = new Ledger();
-    console.log('\n=== Gemini Worker Bridge Status ===');
+    console.log('\n=== Worker Bridge Status ===');
     console.log(`Config Mailbox: ${configManager.getConfig().mailboxRepoPath}`);
-    console.log(`Worker Model:   ${configManager.getConfig().workerModel}`);
+    console.log(`Platforms:      ${orchestrator.getAdapterRegistry().listPlatforms().join(', ')}`);
     console.log(`Allowed Projects: ${Object.keys(configManager.getConfig().allowedProjects).join(', ')}`);
     console.log('\n--- Ledger Jobs ---');
     console.dir(ledger, { depth: null });
     process.exit(0);
   } else if (command === 'cancel') {
     if (!targetJobId) {
-      console.error('Usage: gemini-worker-bridge cancel <jobId>');
+      console.error('Usage: worker-bridge cancel <jobId>');
       process.exit(1);
     }
     logger.info(`Cancelling job: ${targetJobId}`);
@@ -78,7 +77,8 @@ async function main() {
     process.exit(0);
   } else {
     console.log(`
-Gemini Worker Bridge - Safe Headless Antigravity Worker
+Worker Bridge - Platform-Agnostic Headless AI Worker Daemon
+Supported Platforms: Antigravity (AGY), OpenCode
 
 Commands:
   start [--config=<path>]       Start the continuous mailbox polling daemon

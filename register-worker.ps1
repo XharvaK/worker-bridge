@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Registers Gemini Worker Bridge as a normal-user Windows Scheduled Task at Logon.
+    Registers Worker Bridge as a normal-user Windows Scheduled Task at Logon.
     Does NOT require administrator privileges.
 #>
 
@@ -18,13 +18,13 @@ if (-not $NodePath) {
     exit 1
 }
 
-$TaskName = "GeminiWorkerBridge"
+$TaskName = "WorkerBridge"
 $Action = New-ScheduledTaskAction -Execute $NodePath -Argument "`"$DistEntry`" start" -WorkingDirectory "$ScriptDir"
 $Trigger = New-ScheduledTaskTrigger -AtLogOn
 $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
 
 Write-Host "Registering Scheduled Task: $TaskName..." -ForegroundColor Cyan
-Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Description "Headless Antigravity Gemini Worker Bridge Daemon" -Force | Out-Null
+Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Description "Multi-Platform Headless Worker Bridge Daemon" -Force | Out-Null
 
-Write-Host "Gemini Worker Bridge registered successfully. It will start automatically when you log in." -ForegroundColor Green
+Write-Host "Worker Bridge registered successfully. It will start automatically when you log in." -ForegroundColor Green
 Write-Host "To start it immediately, run: Start-ScheduledTask -TaskName `"$TaskName`"" -ForegroundColor Yellow

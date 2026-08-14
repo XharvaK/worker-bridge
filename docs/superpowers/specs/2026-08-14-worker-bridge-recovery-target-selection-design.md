@@ -17,7 +17,7 @@ The existing dirty source state is preserved. The implementation is not restarte
 - `npm run build` passed before correction.
 - The prior `npm test` attempt exposed a multi-round test timeout and then entered a real OpenCode smoke test without a normal-suite gate. That process was stopped to avoid an unbounded provider call.
 - Missing evidence MUST remain unknown. No Gemini transcript details are invented.
-- Every invalid `Gemini Flash 3.5` reference MUST resolve to the Antigravity `Gemini Flash 3.7 High` target. Valid OpenCode `Nemotron 3.5 Lightning` references are unchanged.
+- Every legacy incorrect Gemini Flash reference MUST resolve to the Antigravity `Gemini Flash 3.7 High` target. Valid OpenCode `Nemotron 3.5 Lightning` references are unchanged.
 
 ## Roles and selection model
 

@@ -12,6 +12,7 @@ export interface ProcessRunOptions {
   cwd: string;
   env?: Record<string, string>;
   timeoutSeconds?: number;
+  maxOutputBytes?: number;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
 }
@@ -22,6 +23,41 @@ export interface ProcessRunResult {
   stderr: string;
   timedOut: boolean;
   pid: number | null;
+  outputTruncated: boolean;
+}
+
+const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024;
+
+export interface SafeProcessInvocation {
+  executable: string;
+  args: string[];
+}
+
+export function getSafeProcessInvocation(executable: string, args: string[]): SafeProcessInvocation {
+  const isWindowsBatch = process.platform === 'win32' && /\.(bat|cmd)$/i.test(executable);
+  return isWindowsBatch
+    ? { executable: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', executable, ...args] }
+    : { executable, args };
+}
+
+function appendBounded(current: string, incoming: string, maxBytes: number): { value: string; truncated: boolean } {
+  const combined = current + incoming;
+  if (Buffer.byteLength(combined, 'utf8') <= maxBytes) return { value: combined, truncated: false };
+
+  const marker = '\n...[output truncated]...\n';
+  const available = Math.max(0, maxBytes - Buffer.byteLength(marker, 'utf8'));
+  const headBytes = Math.ceil(available / 2);
+  const tailBytes = Math.floor(available / 2);
+  const combinedBytes = Buffer.from(combined, 'utf8');
+  const tail = tailBytes > 0 ? combinedBytes.subarray(-tailBytes).toString('utf8') : '';
+  return {
+    value: `${combinedBytes.subarray(0, headBytes).toString('utf8')}${marker}${tail}`,
+    truncated: true,
+  };
+}
+
+function sanitizeBounded(value: string, maxBytes: number): { value: string; truncated: boolean } {
+  return appendBounded('', sanitizeSecrets(value), maxBytes);
 }
 
 export class ProcessManager {
@@ -53,17 +89,22 @@ export class ProcessManager {
     return new Promise((resolve) => {
       let stdoutAcc = '';
       let stderrAcc = '';
+      let stdoutTruncated = false;
+      let stderrTruncated = false;
       let timedOut = false;
       let timeoutHandle: NodeJS.Timeout | null = null;
+      const maxOutputBytes = options.maxOutputBytes || DEFAULT_MAX_OUTPUT_BYTES;
 
-      // On Windows, use shell: true for .cmd/.bat scripts to ensure correct execution
-      const useShell = process.platform === 'win32' && /\.(bat|cmd)$/i.test(options.executable);
+      // Batch files cannot be executed directly by CreateProcess. Invoke them through
+      // ComSpec with shell disabled so provider prompt text is never reparsed by an
+      // ambient shell. Node quotes the remaining argument array for CreateProcess.
+      const invocation = getSafeProcessInvocation(options.executable, options.args);
 
-      const child = spawn(options.executable, options.args, {
+      const child = spawn(invocation.executable, invocation.args, {
         cwd: options.cwd,
         env: { ...process.env, ...options.env },
         windowsHide: true,
-        shell: useShell,
+        shell: false,
       });
 
       const pid = child.pid || null;
@@ -83,7 +124,9 @@ export class ProcessManager {
 
       child.stdout?.on('data', (chunk: Buffer) => {
         const text = chunk.toString('utf8');
-        stdoutAcc += text;
+        const bounded = appendBounded(stdoutAcc, text, maxOutputBytes);
+        stdoutAcc = bounded.value;
+        stdoutTruncated = stdoutTruncated || bounded.truncated;
         if (options.onStdout) {
           options.onStdout(sanitizeSecrets(text));
         }
@@ -91,7 +134,9 @@ export class ProcessManager {
 
       child.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString('utf8');
-        stderrAcc += text;
+        const bounded = appendBounded(stderrAcc, text, maxOutputBytes);
+        stderrAcc = bounded.value;
+        stderrTruncated = stderrTruncated || bounded.truncated;
         if (options.onStderr) {
           options.onStderr(sanitizeSecrets(text));
         }
@@ -101,24 +146,30 @@ export class ProcessManager {
         logger.error(`Process error for job ${jobId}: ${err.message}`);
         if (timeoutHandle) clearTimeout(timeoutHandle);
         this.activeProcesses.delete(jobId);
+        const stdout = sanitizeBounded(stdoutAcc, maxOutputBytes);
+        const stderr = sanitizeBounded(stderrAcc + `\nProcess error: ${err.message}`, maxOutputBytes);
         resolve({
           exitCode: 1,
-          stdout: sanitizeSecrets(stdoutAcc),
-          stderr: sanitizeSecrets(stderrAcc + `\nProcess error: ${err.message}`),
+          stdout: stdout.value,
+          stderr: stderr.value,
           timedOut,
           pid,
+          outputTruncated: stdoutTruncated || stderrTruncated || stdout.truncated || stderr.truncated,
         });
       });
 
       child.on('close', (code) => {
         if (timeoutHandle) clearTimeout(timeoutHandle);
         this.activeProcesses.delete(jobId);
+        const stdout = sanitizeBounded(stdoutAcc, maxOutputBytes);
+        const stderr = sanitizeBounded(stderrAcc, maxOutputBytes);
         resolve({
           exitCode: code ?? (timedOut ? 124 : 0),
-          stdout: sanitizeSecrets(stdoutAcc),
-          stderr: sanitizeSecrets(stderrAcc),
+          stdout: stdout.value,
+          stderr: stderr.value,
           timedOut,
           pid,
+          outputTruncated: stdoutTruncated || stderrTruncated || stdout.truncated || stderr.truncated,
         });
       });
     });

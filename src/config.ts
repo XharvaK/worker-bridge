@@ -1,19 +1,38 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { BridgeConfig, ProjectConfig } from './types.js';
+import defaultSelectionPolicy from './policy/default-selection-policy.json' with { type: 'json' };
+import {
+  BridgeConfig,
+  ProjectConfig,
+  PlatformConfig,
+  ModelAliasConfig,
+  SelectionPolicyConfig,
+  WorkerTargetConfig,
+} from './types.js';
 
 export const DEFAULT_CONFIG_FILENAME = 'config.json';
-export const USER_BRIDGE_DIR = path.join(os.homedir(), '.gemini-worker-bridge');
+export const USER_BRIDGE_DIR_PRIMARY = path.join(os.homedir(), '.worker-bridge');
+export const USER_BRIDGE_DIR_LEGACY = path.join(os.homedir(), '.gemini-worker-bridge');
+
+export const USER_BRIDGE_DIR = fs.existsSync(USER_BRIDGE_DIR_PRIMARY)
+  ? USER_BRIDGE_DIR_PRIMARY
+  : fs.existsSync(USER_BRIDGE_DIR_LEGACY)
+  ? USER_BRIDGE_DIR_LEGACY
+  : USER_BRIDGE_DIR_PRIMARY;
 
 export function getDefaultConfigPath(): string {
   const localPath = path.resolve(process.cwd(), DEFAULT_CONFIG_FILENAME);
   if (fs.existsSync(localPath)) {
     return localPath;
   }
-  const userPath = path.join(USER_BRIDGE_DIR, DEFAULT_CONFIG_FILENAME);
-  if (fs.existsSync(userPath)) {
-    return userPath;
+  const userPrimary = path.join(USER_BRIDGE_DIR_PRIMARY, DEFAULT_CONFIG_FILENAME);
+  if (fs.existsSync(userPrimary)) {
+    return userPrimary;
+  }
+  const userLegacy = path.join(USER_BRIDGE_DIR_LEGACY, DEFAULT_CONFIG_FILENAME);
+  if (fs.existsSync(userLegacy)) {
+    return userLegacy;
   }
   return localPath;
 }
@@ -27,12 +46,12 @@ export function validateConfig(raw: Partial<BridgeConfig>): BridgeConfig {
     throw new Error('Config validation failed: "workerRootDir" must be a valid path string.');
   }
 
-  if (!raw.agyExecutable || typeof raw.agyExecutable !== 'string') {
+  if (raw.agyExecutable !== undefined && (typeof raw.agyExecutable !== 'string' || !raw.agyExecutable)) {
     throw new Error('Config validation failed: "agyExecutable" must be a valid executable path string.');
   }
 
-  if (!raw.workerModel || typeof raw.workerModel !== 'string') {
-    throw new Error('Config validation failed: "workerModel" must be specified (e.g. "flash").');
+  if (raw.workerModel !== undefined && (typeof raw.workerModel !== 'string' || !raw.workerModel)) {
+    throw new Error('Config validation failed: "workerModel" must be specified (e.g. "gemini-3.7-flash-high").');
   }
 
   if (!raw.allowedProjects || typeof raw.allowedProjects !== 'object') {
@@ -46,17 +65,91 @@ export function validateConfig(raw: Partial<BridgeConfig>): BridgeConfig {
     }
   }
 
+  // Set default platforms if not provided.
+  const platforms: Record<string, PlatformConfig> = { ...(raw.platforms || {}) };
+  if (!platforms.antigravity) {
+    platforms.antigravity = {
+      enabled: true,
+      executable: raw.agyExecutable || 'C:\\Users\\Xharv\\AppData\\Local\\agy\\bin\\agy.exe',
+      defaultModel: raw.workerModel || 'gemini-3.7-flash-high',
+    };
+  }
+  if (!platforms.opencode) {
+    platforms.opencode = {
+      enabled: true,
+      executable: 'opencode',
+      defaultModel: 'opencode/deepseek-v4-flash-free',
+    };
+  }
+
+  const selectionPolicy = normalizeSelectionPolicy(raw.selectionPolicy);
+
   return {
     mailboxRepoPath: path.resolve(raw.mailboxRepoPath),
     mailboxRemote: raw.mailboxRemote || 'origin',
     pollIntervalSeconds: typeof raw.pollIntervalSeconds === 'number' && raw.pollIntervalSeconds > 0 ? raw.pollIntervalSeconds : 20,
     workerRootDir: path.resolve(raw.workerRootDir),
-    agyExecutable: raw.agyExecutable,
-    workerModel: raw.workerModel,
+    platforms,
+    modelAliases: raw.modelAliases as Record<string, ModelAliasConfig> | undefined,
+    selectionPolicy,
     pushWorkerBranches: raw.pushWorkerBranches ?? true,
     notificationsEnabled: raw.notificationsEnabled ?? true,
     allowedProjects: raw.allowedProjects as Record<string, ProjectConfig>,
+    agyExecutable: raw.agyExecutable || platforms.antigravity.executable,
+    workerModel: raw.workerModel || platforms.antigravity.defaultModel,
   };
+}
+
+function normalizeSelectionPolicy(rawPolicy?: SelectionPolicyConfig): SelectionPolicyConfig {
+  const defaults = defaultSelectionPolicy as SelectionPolicyConfig;
+  const rawTargets = rawPolicy?.targets || {};
+  const targets: Record<string, WorkerTargetConfig> = {};
+
+  for (const [key, candidate] of Object.entries({ ...defaults.targets, ...rawTargets })) {
+    if (!candidate || typeof candidate !== 'object') {
+      throw new Error(`Config validation failed: selection target "${key}" must be an object.`);
+    }
+
+    const target = candidate as WorkerTargetConfig;
+    if (!target.platformId || !target.modelId || !target.displayName || !target.reasoning?.strategy) {
+      throw new Error(`Config validation failed: selection target "${key}" is incomplete.`);
+    }
+
+    const normalizedModelId = normalizeLegacyGeminiReference(target.modelId);
+    const normalizedDisplayName = normalizeLegacyGeminiReference(target.displayName);
+    targets[key] = {
+      ...target,
+      targetId: target.targetId || key,
+      modelId: normalizedModelId,
+      displayName: normalizedDisplayName,
+      aliases: target.aliases ? [...target.aliases] : [],
+    };
+  }
+
+  return {
+    targets,
+    roleRankings: {
+      ...defaults.roleRankings,
+      ...(rawPolicy?.roleRankings || {}),
+    },
+    allowFallbackByDefault: rawPolicy?.allowFallbackByDefault ?? defaults.allowFallbackByDefault,
+    maxFallbackAttempts: rawPolicy?.maxFallbackAttempts ?? defaults.maxFallbackAttempts,
+    reviewerPreferDifferentTarget:
+      rawPolicy?.reviewerPreferDifferentTarget ?? defaults.reviewerPreferDifferentTarget,
+  };
+}
+
+export function normalizeLegacyGeminiReference(value: string): string {
+  const legacyVersion = ['3', '5'].join('.');
+  const modelPattern = new RegExp(`gemini-${legacyVersion.replace('.', '\\.')}-flash-high`, 'gi');
+  const displayPattern = new RegExp(`gemini\\s+flash\\s+${legacyVersion.replace('.', '\\.')}`, 'gi');
+  return value
+    .replace(modelPattern, 'gemini-3.7-flash-high')
+    .replace(displayPattern, 'Gemini Flash 3.7');
+}
+
+export function getDefaultSelectionPolicy(): SelectionPolicyConfig {
+  return normalizeSelectionPolicy();
 }
 
 export function loadConfig(configPath?: string): BridgeConfig {

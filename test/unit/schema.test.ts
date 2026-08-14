@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parseJobSpec } from '../../src/mailbox/parser.js';
 
 describe('JobSpec Parser & Schema Validation', () => {
-  const validJob = {
+  const validJobV1 = {
     schemaVersion: 1,
     jobId: 'job-20260814-001',
     projectId: 'ashley',
@@ -14,15 +14,53 @@ describe('JobSpec Parser & Schema Validation', () => {
     timeoutSeconds: 900,
   };
 
-  it('parses a valid job spec', () => {
-    const result = parseJobSpec(JSON.stringify(validJob));
+  const validJobV2 = {
+    schemaVersion: 2,
+    jobId: 'job-20260814-002',
+    projectId: 'ashley',
+    baseSha: '9e5c4a17b2f6831d044e1cf6f9202517865c3619',
+    intent: 'plan',
+    executionMode: 'READ_ONLY',
+    round: 1,
+    revision: 1,
+    role: 'INVESTIGATOR',
+    workerSelection: {
+      targetId: 'opencode_nemotron_35_lightning',
+    },
+    recovery: {
+      enabled: true,
+      fromRound: 1,
+    },
+    createdAt: '2026-08-14T16:30:00.000Z',
+  };
+
+  it('parses a valid v1 job spec', () => {
+    const result = parseJobSpec(JSON.stringify(validJobV1));
     expect(result.valid).toBe(true);
     expect(result.spec?.jobId).toBe('job-20260814-001');
     expect(result.spec?.requestedPhase).toBe('PLAN');
   });
 
+  it('parses a valid v2 job spec', () => {
+    const result = parseJobSpec(JSON.stringify(validJobV2));
+    expect(result.valid).toBe(true);
+    expect(result.spec?.jobId).toBe('job-20260814-002');
+    expect(result.spec?.intent).toBe('plan');
+    expect(result.spec?.executionMode).toBe('READ_ONLY');
+    expect(result.spec?.round).toBe(1);
+    expect(result.spec?.role).toBe('INVESTIGATOR');
+    expect(result.spec?.workerSelection?.targetId).toBe('opencode_nemotron_35_lightning');
+    expect(result.spec?.recovery?.enabled).toBe(true);
+  });
+
+  it('rejects unsupported worker roles', () => {
+    const result = parseJobSpec(JSON.stringify({ ...validJobV2, role: 'AUTOMATIC_FIXER' }));
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('role');
+  });
+
   it('rejects unsupported schema version', () => {
-    const result = parseJobSpec(JSON.stringify({ ...validJob, schemaVersion: 2 }));
+    const result = parseJobSpec(JSON.stringify({ ...validJobV1, schemaVersion: 99 }));
     expect(result.valid).toBe(false);
     expect(result.error).toContain('schemaVersion');
   });
@@ -38,26 +76,32 @@ describe('JobSpec Parser & Schema Validation', () => {
     ];
 
     for (const badId of malicious) {
-      const res = parseJobSpec(JSON.stringify({ ...validJob, jobId: badId }));
+      const res = parseJobSpec(JSON.stringify({ ...validJobV1, jobId: badId }));
       expect(res.valid).toBe(false);
       expect(res.error).toContain('jobId');
     }
   });
 
   it('rejects invalid commit SHA format', () => {
-    const result = parseJobSpec(JSON.stringify({ ...validJob, baseSha: 'invalid-not-hex' }));
+    const result = parseJobSpec(JSON.stringify({ ...validJobV1, baseSha: 'invalid-not-hex' }));
     expect(result.valid).toBe(false);
     expect(result.error).toContain('baseSha');
   });
 
-  it('rejects unsupported phases', () => {
-    const result = parseJobSpec(JSON.stringify({ ...validJob, requestedPhase: 'RUN_ARBITRARY_COMMAND' }));
+  it('rejects unsupported phases in v1', () => {
+    const result = parseJobSpec(JSON.stringify({ ...validJobV1, requestedPhase: 'RUN_ARBITRARY_COMMAND' }));
     expect(result.valid).toBe(false);
     expect(result.error).toContain('requestedPhase');
   });
 
+  it('rejects unsupported intents in v2', () => {
+    const result = parseJobSpec(JSON.stringify({ ...validJobV2, intent: 'hack_the_planet' }));
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('intent');
+  });
+
   it('rejects non-positive revisions', () => {
-    const result = parseJobSpec(JSON.stringify({ ...validJob, revision: 0 }));
+    const result = parseJobSpec(JSON.stringify({ ...validJobV1, revision: 0 }));
     expect(result.valid).toBe(false);
     expect(result.error).toContain('revision');
   });
