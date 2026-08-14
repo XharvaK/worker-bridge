@@ -72,6 +72,7 @@ function sanitizeCapsule(input: RecoveryCapsuleInput): RecoveryCapsule {
           }
         : undefined,
       baseSha: boundText(input.contract.baseSha, 500),
+      executionMode: input.contract.executionMode,
       executionConstraints: boundArray(input.contract.executionConstraints),
     },
     sourceWorker: {
@@ -167,6 +168,7 @@ export function serializeRecoveryCapsule(capsule: RecoveryCapsule): string {
       acceptedPlan: boundText(capsule.contract.acceptedPlan, 500),
       solReview: boundText(capsule.contract.solReview, 500),
       baseSha: boundText(capsule.contract.baseSha, 500),
+      executionMode: capsule.contract.executionMode,
       executionConstraints: boundArray(capsule.contract.executionConstraints, 8, 500),
     },
     sourceWorker: {
@@ -286,6 +288,7 @@ function isRecoveryCapsuleShape(value: unknown): value is RecoveryCapsuleInput &
     hasString(contract.solReview) &&
     approvalValid &&
     hasString(contract.baseSha) &&
+    (contract.executionMode === undefined || contract.executionMode === 'READ_ONLY' || contract.executionMode === 'WORKTREE_WRITE') &&
     hasStringArray(contract.executionConstraints) &&
     (sourceWorker.targetId === undefined || hasString(sourceWorker.targetId)) &&
     hasString(sourceWorker.platform) &&

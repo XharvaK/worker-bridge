@@ -1,8 +1,8 @@
 import * as fs from 'node:fs';
-import { PlanResult, RecoveryCapsule } from '../types.js';
+import { PlanResult, RecoveryCapsule, WorkerSessionIdentity } from '../types.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { isWorkingTreeClean } from '../git/repo-guard.js';
-import { WorkerAdapter } from './worker-adapter.js';
+import { WorkerAdapter, WorkerAdapterError } from './worker-adapter.js';
 import { logger } from '../utils/logger.js';
 
 export class PlanWorker {
@@ -26,7 +26,9 @@ export class PlanWorker {
     variantOverride?: string,
     sessionId?: string,
     roundNumber = 1,
-    recoveryCapsule?: RecoveryCapsule
+    recoveryCapsule?: RecoveryCapsule,
+    targetId?: string,
+    sessionIdentity?: WorkerSessionIdentity
   ): Promise<PlanResult> {
     const adapter = adapterOverride || this.defaultAdapter;
     const model = modelOverride || '';
@@ -91,11 +93,23 @@ ${JSON.stringify(recoveryCapsule)}
         executionMode: 'READ_ONLY',
         worktreeCwd: worktreePath,
         promptText,
+        targetId,
         modelId: model,
         variant: variantOverride,
         sessionId,
+        sessionIdentity,
         timeoutSeconds,
       });
+
+      const resolvedSessionIdentity: WorkerSessionIdentity = {
+        targetId: targetId ?? roundResult.sessionIdentity?.targetId,
+        platform: adapter.platformId,
+        model: roundResult.modelId || model,
+        reasoning: roundResult.sessionIdentity?.reasoning ?? roundResult.variant ?? variantOverride,
+        sessionId: roundResult.sessionIdentity?.sessionId || roundResult.platformSessionId || roundResult.evidence?.sessionId || sessionId,
+        worktreeCwd: worktreePath,
+        executionMode: 'READ_ONLY',
+      };
 
       // 4. Mechanical Read-Only Assertion: Verify no files were modified
       const statusCheck = await isWorkingTreeClean(worktreePath);
@@ -111,7 +125,9 @@ ${JSON.stringify(recoveryCapsule)}
           platform: adapter.platformId,
           model: roundResult.modelId,
           variant: roundResult.variant,
-          sessionId: roundResult.platformSessionId || sessionId,
+          sessionId: resolvedSessionIdentity.sessionId,
+          sessionIdentity: resolvedSessionIdentity,
+          worktreePath,
           planText: '',
           exitCode: 1,
           clean: false,
@@ -150,7 +166,9 @@ ${JSON.stringify(recoveryCapsule)}
         platform: adapter.platformId,
         model: roundResult.modelId,
         variant: roundResult.variant,
-        sessionId: roundResult.platformSessionId || sessionId,
+        sessionId: resolvedSessionIdentity.sessionId,
+        sessionIdentity: resolvedSessionIdentity,
+        worktreePath,
         planText,
         exitCode: roundResult.exitCode,
         clean: true,
@@ -166,6 +184,16 @@ ${JSON.stringify(recoveryCapsule)}
       };
     } catch (err: any) {
       logger.error(`Exception during READ_ONLY execution for job ${jobId}: ${err.message || String(err)}`);
+      const failureClass = err instanceof WorkerAdapterError ? err.failureClass : 'PROCESS_FAILED';
+      const failedSessionIdentity: WorkerSessionIdentity = {
+        targetId: sessionIdentity?.targetId ?? targetId,
+        platform: sessionIdentity?.platform || adapter.platformId,
+        model: sessionIdentity?.model || model,
+        reasoning: sessionIdentity?.reasoning ?? variantOverride,
+        sessionId: sessionIdentity?.sessionId || sessionId,
+        worktreeCwd: sessionIdentity?.worktreeCwd || worktreePath || this.worktreeManager.getPlanWorktreePath(projectId, jobId),
+        executionMode: 'READ_ONLY',
+      };
       return {
         jobId,
         projectId,
@@ -174,11 +202,14 @@ ${JSON.stringify(recoveryCapsule)}
         model,
         variant: variantOverride,
         sessionId,
+        sessionIdentity: failedSessionIdentity,
+        worktreePath: worktreePath || undefined,
         planText: '',
         exitCode: 1,
         clean: false,
         mutatedFiles: [],
-        failureClass: 'PROCESS_FAILED',
+        failureClass,
+        rawFailureEvidence: err.message || String(err),
         error: `Exception during plan generation: ${err.message || String(err)}`,
       };
     } finally {

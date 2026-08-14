@@ -113,7 +113,10 @@ export interface WorkerIdentity {
   platform: string;
   model: string;
   variant?: string;
+  reasoning?: string;
   platformSessionId?: string;
+  worktreeCwd?: string;
+  executionMode?: ExecutionMode;
 }
 
 export interface JobStatus {
@@ -275,6 +278,7 @@ export interface WorkerInvocationRequest {
   executionMode: ExecutionMode;
   worktreeCwd: string;
   promptText: string;
+  targetId?: string;
   modelId: string;
   variant?: string;
   sessionId?: string;
@@ -351,6 +355,7 @@ export interface RecoveryContract {
   solReview: string;
   ownerApproval?: OwnerApproval;
   baseSha: string;
+  executionMode?: ExecutionMode;
   executionConstraints: string[];
 }
 
@@ -412,6 +417,8 @@ export interface PlanResult {
   model: string;
   variant?: string;
   sessionId?: string;
+  sessionIdentity?: WorkerSessionIdentity;
+  worktreePath?: string;
   targetId?: string;
   planText: string;
   exitCode: number;
@@ -433,6 +440,7 @@ export interface ImplementResult {
   model: string;
   variant?: string;
   sessionId?: string;
+  sessionIdentity?: WorkerSessionIdentity;
   targetId?: string;
   workerBranch: string;
   headSha?: string;

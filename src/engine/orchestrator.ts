@@ -12,6 +12,8 @@ import { verifyBaseSha } from '../git/repo-guard.js';
 import { AdapterRegistry } from '../worker/adapter-registry.js';
 import { AntigravityAdapter } from '../worker/agy-adapter.js';
 import { OpenCodeAdapter } from '../worker/opencode-adapter.js';
+import { CodexAdapter } from '../worker/codex-adapter.js';
+import { WorkerAdapterError } from '../worker/worker-adapter.js';
 import { ModelSelector, ResolvedWorkerSelection } from './model-selector.js';
 import { TargetAvailabilityLedger } from './target-availability-ledger.js';
 import {
@@ -26,10 +28,13 @@ import { sendWindowsNotification } from '../utils/notifier.js';
 import { logger } from '../utils/logger.js';
 import {
   JobStatus,
+  ExecutionMode,
+  ImplementResult,
   PlanResult,
   RecoveryCapsule,
   WorkerEvidence,
   WorkerRole,
+  WorkerSessionIdentity,
   WorkJob,
 } from '../types.js';
 
@@ -71,9 +76,11 @@ export class Orchestrator {
       const agyModel = cfg.platforms?.antigravity?.defaultModel || cfg.workerModel;
       const opencodeExe = cfg.platforms?.opencode?.executable || 'opencode';
       const opencodeModel = cfg.platforms?.opencode?.defaultModel || 'opencode/deepseek-v4-flash-free';
+      const codexExe = cfg.platforms?.codex?.executable || 'codex';
 
       this.adapterRegistry.register(new AntigravityAdapter(agyExe, agyModel, this.processManager));
       this.adapterRegistry.register(new OpenCodeAdapter(opencodeExe, opencodeModel, this.processManager));
+      this.adapterRegistry.register(new CodexAdapter(codexExe, this.processManager));
     }
 
     this.modelSelector = new ModelSelector(this.adapterRegistry, cfg, this.availability);
@@ -96,14 +103,14 @@ export class Orchestrator {
 
   private allowFallbackFor(spec: WorkJob): boolean {
     const selection = spec.workerSelection;
-    if (selection?.allowFallback === true) return true;
     if (selection?.allowFallback === false) return false;
 
     const requestedModel = selection?.model?.trim().toLowerCase();
     const explicitTarget = Boolean(
       selection?.targetId || (requestedModel && !['auto', 'your call'].includes(requestedModel))
     );
-    if (explicitTarget) return false;
+    if (explicitTarget) return selection?.fallbackSelection !== undefined;
+    if (selection?.allowFallback === true) return true;
 
     const policy = this.configManager.getConfig().selectionPolicy;
     return policy?.allowFallbackByDefault === true || !requestedModel || ['auto', 'your call'].includes(requestedModel);
@@ -171,21 +178,22 @@ export class Orchestrator {
         solReview: '',
         ownerApproval: spec.ownerApproval,
         baseSha: spec.baseSha,
+        executionMode: 'READ_ONLY',
         executionConstraints: ['READ_ONLY mode must not modify source files.', 'Use a fresh destination session for fallback.'],
       },
       sourceWorker: {
         targetId: selection.targetId,
         platform: result.platform,
         model: result.model,
-        reasoning: result.variant,
-        sessionId: result.sessionId,
+        reasoning: result.sessionIdentity?.reasoning || result.variant,
+        sessionId: result.sessionIdentity?.sessionId || result.sessionId,
         requestPrompt: '',
         failureClass: result.failureClass,
         retryAt: result.retryAt,
       },
       capturedHistory: evidence,
       currentState: {
-        worktreePath: 'not-preserved-read-only-worktree',
+        worktreePath: result.worktreePath || 'not-preserved-read-only-worktree',
         baseSha: spec.baseSha,
         headSha: spec.baseSha,
         gitStatus: result.mutatedFiles.join('\n'),
@@ -214,6 +222,162 @@ export class Orchestrator {
     this.availability.recordFailure(target, failureClass, new Date().toISOString(), retryAt, rawEvidence, 'worker_result');
   }
 
+  private sessionIdentityFromRecord(record: ReturnType<Ledger['getJobRecord']>): WorkerSessionIdentity | undefined {
+    if (!record?.platform || !record.model || !record.worktreePath) return undefined;
+    return {
+      targetId: record.targetId,
+      platform: record.platform,
+      model: record.model,
+      reasoning: record.reasoning,
+      sessionId: record.platformSessionId || undefined,
+      worktreeCwd: record.worktreePath,
+      executionMode: record.lastHandledMode,
+    };
+  }
+
+  private async getCompatibleRecoveryWorktree(
+    spec: WorkJob,
+    record: ReturnType<Ledger['getJobRecord']>,
+    capsule: RecoveryCapsule | undefined,
+  ): Promise<string | undefined> {
+    if (spec.executionMode !== 'WORKTREE_WRITE' || !record?.worktreePath || !capsule) return undefined;
+    if (!fs.existsSync(record.worktreePath) || capsule.currentState.inspectionFailed) return undefined;
+    if (capsule.contract.executionMode && capsule.contract.executionMode !== spec.executionMode) return undefined;
+    if (capsule.contract.baseSha !== spec.baseSha || capsule.currentState.baseSha !== spec.baseSha) return undefined;
+
+    const expectedPath = path.resolve(capsule.currentState.worktreePath);
+    const actualPath = path.resolve(record.worktreePath);
+    const pathsMatch = process.platform === 'win32'
+      ? expectedPath.toLowerCase() === actualPath.toLowerCase()
+      : expectedPath === actualPath;
+    if (!pathsMatch || !capsule.currentState.branch) return undefined;
+
+    try {
+      const [{ stdout: branch }, { stdout: head }] = await Promise.all([
+        execFileAsync('git', ['-C', record.worktreePath, 'branch', '--show-current'], { windowsHide: true }),
+        execFileAsync('git', ['-C', record.worktreePath, 'rev-parse', 'HEAD'], { windowsHide: true }),
+      ]);
+      if (branch.trim() !== capsule.currentState.branch.trim()) return undefined;
+      if (capsule.currentState.headSha && head.trim() !== capsule.currentState.headSha.trim()) return undefined;
+      return record.worktreePath;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private buildPreInvocationFailureCapsule(
+    spec: WorkJob,
+    role: WorkerRole,
+    selection: ResolvedWorkerSelection | undefined,
+    previous: ReturnType<Ledger['getJobRecord']>,
+    failureClass: PlanResult['failureClass'],
+    message: string,
+  ): RecoveryCapsule {
+    const worktreePath = previous?.worktreePath || (
+      spec.executionMode === 'WORKTREE_WRITE'
+        ? this.worktreeManager.getImplementWorktreePath(spec.projectId, spec.jobId)
+        : this.worktreeManager.getPlanWorktreePath(spec.projectId, spec.jobId)
+    );
+    return buildRecoveryCapsule({
+      contract: {
+        jobId: spec.jobId,
+        round: spec.round,
+        revision: spec.revision,
+        role,
+        originalGoal: '',
+        acceptedPlan: '',
+        solReview: '',
+        ownerApproval: spec.ownerApproval,
+        baseSha: spec.baseSha,
+        executionMode: spec.executionMode,
+        executionConstraints: ['No worker invocation occurred after the bridge failed closed.'],
+      },
+      sourceWorker: {
+        targetId: selection?.targetId || previous?.targetId,
+        platform: selection?.platform || previous?.platform || 'unknown',
+        model: selection?.modelId || previous?.model || spec.workerSelection?.model || 'unknown',
+        reasoning: selection?.variant || previous?.reasoning || spec.workerSelection?.reasoning?.value,
+        sessionId: previous?.platformSessionId || undefined,
+        failureClass,
+      },
+      capturedHistory: {
+        stdout: '',
+        stderr: message,
+        partialResponse: '',
+        outputTruncated: false,
+        sessionId: previous?.platformSessionId || undefined,
+      },
+      currentState: {
+        worktreePath,
+        branch: previous?.workerBranch || undefined,
+        baseSha: spec.baseSha,
+        headSha: previous?.currentHeadSha || spec.baseSha,
+        gitStatus: 'not-captured',
+        gitDiff: '',
+        gitDiffStat: '',
+        diffCheck: 'not-run',
+        filesChanged: [],
+        bridgeVerification: { preInvocation: 'failed' },
+        incompleteOperations: ['worker invocation was refused before execution'],
+      },
+      recoveryDirective: {
+        provenComplete: ['the bridge preserved the exact requested failure identity'],
+        appearsIncomplete: ['worker invocation'],
+        knownFailures: [failureClass || 'PROCESS_FAILED'],
+        remainingWork: ['resolve the exact target/session/authority identity explicitly'],
+        mustNotRepeatBlindly: ['substitute a different target, model, reasoning profile, or session'],
+        instruction: 'PRESERVE EXACT FAILURE EVIDENCE. DO NOT SILENTLY SUBSTITUTE A WORKER.',
+      },
+    });
+  }
+
+  private async publishPreInvocationFailure(
+    spec: WorkJob,
+    role: WorkerRole,
+    selection: ResolvedWorkerSelection | undefined,
+    previous: ReturnType<Ledger['getJobRecord']>,
+    failureClass: PlanResult['failureClass'],
+    message: string,
+  ): Promise<void> {
+    const capsule = this.buildPreInvocationFailureCapsule(spec, role, selection, previous, failureClass, message);
+    const capsulePath = await this.mailboxSyncer.writeRecoveryCapsule(spec.jobId, spec.round, capsule);
+    if (previous) {
+      this.ledger.updateJobEvidence(spec.jobId, {
+        recoveryCapsulePath: capsulePath,
+        currentHeadSha: previous.currentHeadSha || spec.baseSha,
+      });
+      this.ledger.recordFinish(spec.jobId, 'BLOCKED', previous.platformSessionId);
+    }
+    const status: JobStatus = {
+      schemaVersion: spec.schemaVersion || 2,
+      jobId: spec.jobId,
+      projectId: spec.projectId,
+      observedRound: spec.round,
+      observedRevision: spec.revision,
+      observedPhase: spec.requestedPhase || (spec.executionMode === 'READ_ONLY' ? 'PLAN' : 'IMPLEMENT'),
+      state: 'BLOCKED',
+      updatedAt: new Date().toISOString(),
+      baseSha: spec.baseSha,
+      currentWorker: selection
+        ? {
+            targetId: selection.targetId,
+            platform: selection.platform,
+            model: selection.modelId,
+            variant: selection.variant,
+            reasoning: selection.variant,
+            platformSessionId: previous?.platformSessionId || undefined,
+            worktreeCwd: capsule.currentState.worktreePath,
+            executionMode: spec.executionMode,
+          }
+        : null,
+      recoveryCapsulePath: capsulePath,
+      error: message,
+    };
+    await this.mailboxSyncer.writeJobStatus(spec.jobId, status);
+    await this.mailboxTransport.stageAndCommitJobArtifacts(spec.jobId, `worker(${spec.jobId}): publish pre-invocation failure`);
+    await this.mailboxTransport.pushWithRetry();
+  }
+
   async init(): Promise<void> {
     logger.info('Initializing Worker Bridge Orchestrator...');
     const recovered = this.ledger.recoverInterruptedJobs((pid) => this.processManager.isPidAlive(pid));
@@ -233,7 +397,16 @@ export class Orchestrator {
           updatedAt: new Date().toISOString(),
           baseSha: '',
           currentWorker: rec.platform
-            ? { targetId: rec.targetId, platform: rec.platform, model: rec.model || '' }
+            ? {
+                targetId: rec.targetId,
+                platform: rec.platform,
+                model: rec.model || '',
+                variant: rec.reasoning,
+                reasoning: rec.reasoning,
+                platformSessionId: rec.platformSessionId || undefined,
+                worktreeCwd: rec.worktreePath || undefined,
+                executionMode: rec.lastHandledMode,
+              }
             : null,
           workerBranch: rec.workerBranch,
           recoveryCapsulePath: rec.recoveryCapsulePath,
@@ -440,14 +613,35 @@ export class Orchestrator {
           ? spec.workerSelection?.avoidTargetId || prevRecord?.targetId
           : spec.workerSelection?.avoidTargetId;
       let resolvedWorker: ResolvedWorkerSelection;
+      const previousSessionIdentity = this.sessionIdentityFromRecord(prevRecord);
       try {
         const requestedSelection =
           spec.sessionPolicy === 'CONTINUE' &&
           prevRecord?.targetId &&
           (!spec.workerSelection?.targetId &&
             (!spec.workerSelection?.model || ['auto', 'your call'].includes(spec.workerSelection.model.toLowerCase())))
-            ? { targetId: prevRecord.targetId }
-            : spec.workerSelection;
+            ? {
+                targetId: prevRecord.targetId,
+                platform: prevRecord.platform,
+                model: prevRecord.model,
+                reasoning: prevRecord.reasoning
+                  ? { strategy: 'explicit' as const, value: prevRecord.reasoning }
+                  : undefined,
+              }
+            : spec.sessionPolicy === 'CONTINUE' &&
+                prevRecord?.targetId &&
+                spec.workerSelection?.targetId === prevRecord.targetId &&
+                !spec.workerSelection.model &&
+                !!prevRecord.model
+              ? {
+                  ...spec.workerSelection,
+                  platform: spec.workerSelection.platform || prevRecord.platform,
+                  model: prevRecord.model,
+                  reasoning: spec.workerSelection.reasoning || (prevRecord.reasoning
+                    ? { strategy: 'explicit' as const, value: prevRecord.reasoning }
+                    : undefined),
+                }
+              : spec.workerSelection;
         if (requestedSelection?.targetId && spec.sessionPolicy === 'CONTINUE' && prevRecord?.targetId === requestedSelection.targetId) {
           if (!this.availability.isEligible(requestedSelection.targetId)) {
             throw new Error(`MODEL_SELECTION_ERROR: CONTINUE target "${requestedSelection.targetId}" is unavailable.`);
@@ -461,6 +655,10 @@ export class Orchestrator {
         );
       } catch (err: any) {
         logger.warn(`Model resolution failed for job ${jobId}: ${err.message}`);
+        if (err instanceof WorkerAdapterError) {
+          await this.publishPreInvocationFailure(spec, role, undefined, prevRecord, err.failureClass, err.message);
+          continue;
+        }
         const status: JobStatus = {
           schemaVersion: spec.schemaVersion || 2,
           jobId,
@@ -490,20 +688,35 @@ export class Orchestrator {
 
       // 9. Session Policy Management
       let sessionIdToUse: string | undefined;
+      let sessionIdentityToUse: WorkerSessionIdentity | undefined;
+      const recoveryWorktreeCwd = await this.getCompatibleRecoveryWorktree(spec, prevRecord, recoveryCapsule);
+      const continuationWorktreeCwd = spec.sessionPolicy === 'CONTINUE' ? recoveryWorktreeCwd : undefined;
+
+      if (spec.sessionPolicy === 'CONTINUE' && !prevRecord?.platformSessionId) {
+        await this.publishPreInvocationFailure(
+          spec,
+          role,
+          resolvedWorker,
+          prevRecord,
+          'SESSION_ID_UNAVAILABLE',
+          'SESSION_ID_UNAVAILABLE: CONTINUE requires an exact persisted platform session ID; no worker was invoked.',
+        );
+        continue;
+      }
 
       if (
         spec.sessionPolicy === 'CONTINUE' &&
         prevRecord?.platformSessionId &&
+        previousSessionIdentity &&
         this.modelSelector.canContinueSession(
-          {
-            targetId: prevRecord.targetId,
-            platform: prevRecord.platform,
-            model: prevRecord.model,
-          },
-          resolvedWorker
+          previousSessionIdentity,
+          resolvedWorker,
+          spec.executionMode,
+          continuationWorktreeCwd || '',
         )
       ) {
         sessionIdToUse = prevRecord.platformSessionId;
+        sessionIdentityToUse = previousSessionIdentity;
         logger.info(`Continuing existing ${resolvedWorker.platform} session: ${sessionIdToUse}`);
       } else {
         logger.info(`Starting FRESH ${resolvedWorker.platform} session for job ${jobId}`);
@@ -536,6 +749,7 @@ export class Orchestrator {
         }
 
         // Mark PLANNING / WORKER_RUNNING state
+        const planWorktree = this.worktreeManager.getPlanWorktreePath(spec.projectId, jobId);
         const runningStatus: JobStatus = {
           schemaVersion: spec.schemaVersion || 2,
           jobId,
@@ -551,7 +765,10 @@ export class Orchestrator {
             platform: resolvedWorker.platform,
             model: resolvedWorker.modelId,
             variant: resolvedWorker.variant,
+            reasoning: resolvedWorker.variant,
             platformSessionId: sessionIdToUse,
+            worktreeCwd: planWorktree,
+            executionMode: 'READ_ONLY',
           },
           summary: `Worker on ${resolvedWorker.platform} (${resolvedWorker.modelId}) is executing read-only investigation and generating plan...`,
         };
@@ -559,7 +776,6 @@ export class Orchestrator {
         await this.mailboxTransport.stageAndCommitJobArtifacts(jobId, `worker(${jobId}): mark WORKER_RUNNING`);
         await this.mailboxTransport.pushWithRetry();
 
-        const planWorktree = this.worktreeManager.getPlanWorktreePath(spec.projectId, jobId);
         this.ledger.recordStart(
           jobId,
           spec.projectId,
@@ -574,7 +790,11 @@ export class Orchestrator {
           null,
           sessionIdToUse,
           resolvedWorker.targetId,
-          role
+          role,
+          false,
+          undefined,
+          spec.baseSha,
+          resolvedWorker.variant
         );
 
         // Execute READ_ONLY worker with fallback handling if quota exhausted
@@ -592,7 +812,9 @@ export class Orchestrator {
           currentWorkerSelection.variant,
           sessionIdToUse,
           spec.round,
-          recoveryCapsule
+          recoveryCapsule,
+          currentWorkerSelection.targetId,
+          sessionIdentityToUse
         );
         planRes = { ...planRes, targetId: currentWorkerSelection.targetId };
 
@@ -621,7 +843,10 @@ export class Orchestrator {
             currentWorkerSelection = await this.modelSelector.getNextFallback(
               currentWorkerSelection,
               role,
-              failedTargetIds
+              {
+                failedTargetIds,
+                authorizedFallback: spec.workerSelection?.fallbackSelection,
+              }
             );
             currentAdapter = this.adapterRegistry.get(currentWorkerSelection.platform)!;
 
@@ -637,7 +862,8 @@ export class Orchestrator {
               currentWorkerSelection.variant,
               undefined, // Fresh session on fallback
               spec.round,
-              recoveryCapsule
+              recoveryCapsule,
+              currentWorkerSelection.targetId
             );
             planRes = { ...planRes, targetId: currentWorkerSelection.targetId };
           } catch {
@@ -650,6 +876,10 @@ export class Orchestrator {
           this.availability.recordSuccess(currentWorkerSelection.targetId, successfulTarget);
           await this.mailboxSyncer.writeJobPlan(jobId, planRes.planText, spec.round);
           this.ledger.updateJobEvidence(jobId, {
+            platform: planRes.platform,
+            model: planRes.model,
+            reasoning: planRes.sessionIdentity?.reasoning || planRes.variant,
+            platformSessionId: planRes.sessionIdentity?.sessionId || planRes.sessionId || null,
             targetId: currentWorkerSelection.targetId,
             role,
             currentHeadSha: spec.baseSha,
@@ -675,7 +905,10 @@ export class Orchestrator {
               platform: planRes.platform,
               model: planRes.model,
               variant: planRes.variant,
+              reasoning: planRes.sessionIdentity?.reasoning || planRes.variant,
               platformSessionId: planRes.sessionId,
+              worktreeCwd: planRes.worktreePath,
+              executionMode: 'READ_ONLY',
             },
             exitCode: 0,
             summary: `Implementation plan generated successfully by ${planRes.platform} (${planRes.model}). Read-only assertions verified. Ready for Sol review.`,
@@ -697,6 +930,10 @@ export class Orchestrator {
               planRes.recoveryEvidence || this.buildPlanRecoveryCapsule(spec, role, currentWorkerSelection, planRes, goalText);
             const capsulePath = await this.mailboxSyncer.writeRecoveryCapsule(jobId, spec.round, failedCapsule);
             this.ledger.updateJobEvidence(jobId, {
+              platform: planRes.platform,
+              model: planRes.model,
+              reasoning: planRes.sessionIdentity?.reasoning || planRes.variant,
+              platformSessionId: planRes.sessionIdentity?.sessionId || planRes.sessionId || null,
               targetId: currentWorkerSelection.targetId,
               role,
               recoveryCapsulePath: capsulePath,
@@ -719,7 +956,10 @@ export class Orchestrator {
               platform: planRes.platform,
               model: planRes.model,
               variant: planRes.variant,
+              reasoning: planRes.sessionIdentity?.reasoning || planRes.variant,
               platformSessionId: planRes.sessionId,
+              worktreeCwd: planRes.worktreePath,
+              executionMode: 'READ_ONLY',
             },
             exitCode: planRes.exitCode,
             error: planRes.error || 'Plan generation failed.',
@@ -769,6 +1009,8 @@ export class Orchestrator {
         }
 
         // Mark IMPLEMENTING / WORKER_RUNNING state
+        const preservedWorktreePath = spec.recovery?.enabled ? recoveryWorktreeCwd : undefined;
+        const impWorktree = preservedWorktreePath || this.worktreeManager.getImplementWorktreePath(spec.projectId, jobId);
         const impStatus: JobStatus = {
           schemaVersion: spec.schemaVersion || 2,
           jobId,
@@ -784,7 +1026,10 @@ export class Orchestrator {
             platform: resolvedWorker.platform,
             model: resolvedWorker.modelId,
             variant: resolvedWorker.variant,
+            reasoning: resolvedWorker.variant,
             platformSessionId: sessionIdToUse,
+            worktreeCwd: impWorktree,
+            executionMode: 'WORKTREE_WRITE',
           },
           summary: `Worker on ${resolvedWorker.platform} (${resolvedWorker.modelId}) is implementing code in isolated worktree...`,
         };
@@ -792,8 +1037,6 @@ export class Orchestrator {
         await this.mailboxTransport.stageAndCommitJobArtifacts(jobId, `worker(${jobId}): mark WORKER_RUNNING`);
         await this.mailboxTransport.pushWithRetry();
 
-        const preservedWorktreePath = spec.recovery?.enabled ? prevRecord?.worktreePath || undefined : undefined;
-        const impWorktree = preservedWorktreePath || this.worktreeManager.getImplementWorktreePath(spec.projectId, jobId);
         const workerBranch = prevRecord?.workerBranch || this.worktreeManager.getWorkerBranchName(spec.projectId, jobId);
         this.ledger.recordStart(
           jobId,
@@ -812,7 +1055,8 @@ export class Orchestrator {
           role,
           false,
           undefined,
-          prevRecord?.currentHeadSha || null
+          prevRecord?.currentHeadSha || null,
+          resolvedWorker.variant
         );
 
         // Execute WORKTREE_WRITE worker
@@ -838,7 +1082,8 @@ export class Orchestrator {
           preservedWorktreePath,
           currentWorkerSelection.targetId,
           spec.revision,
-          spec.ownerApproval
+          spec.ownerApproval,
+          sessionIdentityToUse
         );
         impRes = { ...impRes, targetId: currentWorkerSelection.targetId };
 
@@ -862,9 +1107,11 @@ export class Orchestrator {
             currentWorkerSelection = await this.modelSelector.getNextFallback(
               currentWorkerSelection,
               role,
-              failedTargetIds,
-              undefined,
-              automaticReviewerAvoidance
+              {
+                failedTargetIds,
+                avoidTargetId: automaticReviewerAvoidance,
+                authorizedFallback: spec.workerSelection?.fallbackSelection,
+              }
             );
             currentAdapter = this.adapterRegistry.get(currentWorkerSelection.platform)!;
             impRes = await this.implementWorker.execute(
@@ -884,10 +1131,11 @@ export class Orchestrator {
               undefined,
               spec.round,
               recoveryCapsule,
-              undefined,
-              currentWorkerSelection.targetId,
-              spec.revision,
-              spec.ownerApproval
+                undefined,
+                currentWorkerSelection.targetId,
+                spec.revision,
+                spec.ownerApproval,
+                undefined
             );
             impRes = { ...impRes, targetId: currentWorkerSelection.targetId };
           } catch {
@@ -909,6 +1157,10 @@ export class Orchestrator {
             this.modelSelector.getTargetConfig(currentWorkerSelection.targetId)
           );
           this.ledger.updateJobEvidence(jobId, {
+            platform: impRes.platform,
+            model: impRes.model,
+            reasoning: impRes.sessionIdentity?.reasoning || impRes.variant,
+            platformSessionId: impRes.sessionIdentity?.sessionId || impRes.sessionId || null,
             targetId: currentWorkerSelection.targetId,
             role,
             sourceEffectsPresent: impRes.sourceEffectsPresent,
@@ -937,7 +1189,10 @@ export class Orchestrator {
               platform: impRes.platform,
               model: impRes.model,
               variant: impRes.variant,
+              reasoning: impRes.sessionIdentity?.reasoning || impRes.variant,
               platformSessionId: impRes.sessionId,
+              worktreeCwd: impRes.worktreePath,
+              executionMode: 'WORKTREE_WRITE',
             },
             workerBranch: impRes.workerBranch,
             headSha: impRes.headSha,
@@ -961,6 +1216,10 @@ export class Orchestrator {
           }
           const interruptedWithSourceState = impRes.sourceEffectsPresent === true;
           this.ledger.updateJobEvidence(jobId, {
+            platform: impRes.platform,
+            model: impRes.model,
+            reasoning: impRes.sessionIdentity?.reasoning || impRes.variant,
+            platformSessionId: impRes.sessionIdentity?.sessionId || impRes.sessionId || null,
             targetId: currentWorkerSelection.targetId,
             role,
             sourceEffectsPresent: impRes.sourceEffectsPresent,
@@ -989,7 +1248,10 @@ export class Orchestrator {
               platform: impRes.platform,
               model: impRes.model,
               variant: impRes.variant,
+              reasoning: impRes.sessionIdentity?.reasoning || impRes.variant,
               platformSessionId: impRes.sessionId,
+              worktreeCwd: impRes.worktreePath,
+              executionMode: 'WORKTREE_WRITE',
             },
             workerBranch: impRes.workerBranch,
             headSha: impRes.headSha,

@@ -20,6 +20,7 @@ const execFileAsync = promisify(execFile);
 
 class MockWorkerAdapter implements WorkerAdapter {
   readonly platformId: string;
+  readonly calls: WorkerInvocationRequest[] = [];
 
   constructor(platformId: string) {
     this.platformId = platformId;
@@ -54,6 +55,7 @@ class MockWorkerAdapter implements WorkerAdapter {
   }
 
   async invokeWorker(request: WorkerInvocationRequest): Promise<WorkerRoundResult> {
+    this.calls.push(request);
     const startedAt = new Date().toISOString();
     if (request.executionMode === 'WORKTREE_WRITE') {
       fs.writeFileSync(
@@ -233,6 +235,7 @@ describe('Multi-Round Cross-Platform Orchestration Flow', () => {
     const status1 = JSON.parse(status1Raw);
     expect(status1.state).toBe('WORKER_RETURNED');
     expect(status1.currentWorker.platform).toBe('antigravity');
+    expect(status1.currentWorker.reasoning).toBe('high');
 
     // ==========================================
     // SOL REVIEW & OWNER APPROVAL
@@ -275,7 +278,10 @@ describe('Multi-Round Cross-Platform Orchestration Flow', () => {
     const status2 = JSON.parse(status2Raw);
     expect(status2.state).toBe('WORKER_RETURNED');
     expect(status2.currentWorker.platform).toBe('opencode');
+    expect(status2.currentWorker.reasoning).toBe('high');
     expect(status2.workerBranch).toBe(`worker/targetproj/${jobId}`);
+    expect(customLedger.getJobRecord(jobId)?.reasoning).toBe('high');
+    expect(customRegistry.get('opencode')).toBeDefined();
 
     // Verify target repo worker branch was created with commit
     const { stdout: branchCheck } = await execFileAsync(

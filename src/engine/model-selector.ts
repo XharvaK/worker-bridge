@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { getDefaultSelectionPolicy, normalizeLegacyGeminiReference } from '../config.js';
 import {
   BridgeConfig,
@@ -7,6 +8,7 @@ import {
   ReasoningStrategy,
   SelectionPolicyConfig,
   ExplicitFallbackSelection,
+  WorkerSessionIdentity,
   WorkerRole,
   WorkerSelection,
   WorkerTargetConfig,
@@ -309,12 +311,53 @@ export class ModelSelector {
   }
 
   canContinueSession(
+    previous: WorkerSessionIdentity,
+    next: ResolvedWorkerSelection,
+    requestedMode: ExecutionMode,
+    currentWorktreeCwd?: string
+  ): boolean;
+  canContinueSession(
     previous: { targetId?: string; platform?: string; model?: string },
     next: ResolvedWorkerSelection
+  ): boolean;
+  canContinueSession(
+    previous: WorkerSessionIdentity | { targetId?: string; platform?: string; model?: string },
+    next: ResolvedWorkerSelection,
+    requestedMode?: ExecutionMode,
+    currentWorktreeCwd?: string
   ): boolean {
-    if (previous.targetId === next.targetId) return true;
-    if (!previous.platform || previous.platform !== next.platform) return false;
-    if (previous.model === next.modelId) return true;
+    // Preserve the pre-session-identity compatibility call used by older adapters.
+    if (requestedMode === undefined) {
+      if (previous.targetId === next.targetId) return true;
+      if (!previous.platform || previous.platform !== next.platform) return false;
+      if (previous.model === next.modelId) return true;
+      return this.registry.get(next.platform)?.supportsCrossModelSessionContinuation === true;
+    }
+
+    const identity = previous as WorkerSessionIdentity;
+    if (
+      !identity.targetId ||
+      !identity.sessionId ||
+      !identity.platform ||
+      !identity.model ||
+      !identity.reasoning ||
+      !identity.worktreeCwd ||
+      !next.targetId ||
+      !next.variant ||
+      !currentWorktreeCwd
+    ) return false;
+    if (identity.platform !== next.platform || identity.executionMode !== requestedMode) return false;
+    if (currentWorktreeCwd !== undefined) {
+      const previousPath = path.resolve(identity.worktreeCwd);
+      const currentPath = path.resolve(currentWorktreeCwd);
+      const pathsMatch = process.platform === 'win32'
+        ? previousPath.toLowerCase() === currentPath.toLowerCase()
+        : previousPath === currentPath;
+      if (!pathsMatch) return false;
+    }
+    if (identity.reasoning !== next.variant) return false;
+    if (identity.targetId === next.targetId && identity.model === next.modelId) return true;
+    if (identity.model === next.modelId) return false;
     return this.registry.get(next.platform)?.supportsCrossModelSessionContinuation === true;
   }
 }

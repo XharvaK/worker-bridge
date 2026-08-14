@@ -136,7 +136,8 @@ export class Ledger {
     arg14?: any,
     arg15?: any,
     arg16?: any,
-    arg17?: any
+    arg17?: any,
+    arg18?: any
   ): LedgerJobRecord {
     let mode: ExecutionMode = 'READ_ONLY';
     let intent: JobIntent = 'plan';
@@ -153,6 +154,7 @@ export class Ledger {
     let sourceEffectsPresent = false;
     let recoveryCapsulePath: string | null = null;
     let currentHeadSha: string | null = null;
+    let reasoning: string | undefined;
 
     if (typeof arg4 === 'number' && (typeof arg5 === 'number' || arg5 === null || arg5 === undefined)) {
       // Legacy signature: (jobId, projectId, phase, revision, pid, worktreePath?, workerBranch?)
@@ -181,6 +183,7 @@ export class Ledger {
       sourceEffectsPresent = arg15 === true;
       recoveryCapsulePath = arg16 || null;
       currentHeadSha = arg17 || null;
+      reasoning = typeof arg18 === 'string' ? arg18 : undefined;
     }
 
     const state: JobState =
@@ -197,6 +200,7 @@ export class Ledger {
       lastHandledPhase: phase,
       platform,
       model,
+      reasoning,
       targetId,
       role,
       platformSessionId: sessionId || null,
@@ -236,7 +240,7 @@ export class Ledger {
 
   updateJobEvidence(
     jobId: string,
-    patch: Partial<Pick<LedgerJobRecord, 'targetId' | 'role' | 'sourceEffectsPresent' | 'worktreePath' | 'workerBranch' | 'recoveryCapsulePath' | 'currentHeadSha'>>
+    patch: Partial<Pick<LedgerJobRecord, 'platform' | 'model' | 'reasoning' | 'platformSessionId' | 'targetId' | 'role' | 'sourceEffectsPresent' | 'worktreePath' | 'workerBranch' | 'recoveryCapsulePath' | 'currentHeadSha'>>
   ): LedgerJobRecord | null {
     const record = this.data.jobs[jobId];
     if (!record) return null;

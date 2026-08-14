@@ -26,7 +26,7 @@ class RecoveryTestAdapter implements WorkerAdapter {
 
   constructor(
     readonly platformId: string,
-    private readonly mode: 'quota-read' | 'quota-write' | 'success'
+    private readonly mode: 'quota-read' | 'quota-write' | 'quota-write-no-effects' | 'success'
   ) {}
 
   async inspectEnvironment(): Promise<WorkerPlatformInfo> {
@@ -53,7 +53,7 @@ class RecoveryTestAdapter implements WorkerAdapter {
   async invokeWorker(request: WorkerInvocationRequest): Promise<WorkerRoundResult> {
     this.calls.push(request);
     const now = new Date().toISOString();
-    if (this.mode === 'quota-read' || this.mode === 'quota-write') {
+    if (this.mode === 'quota-read' || this.mode === 'quota-write' || this.mode === 'quota-write-no-effects') {
       if (this.mode === 'quota-write' && request.executionMode === 'WORKTREE_WRITE') {
         fs.writeFileSync(path.join(request.worktreeCwd, 'partial-source.js'), 'export const partial = true;\n');
       }
@@ -66,7 +66,9 @@ class RecoveryTestAdapter implements WorkerAdapter {
         artifactsCreated: [],
         startedAt: now,
         completedAt: now,
-        failureClass: request.executionMode === 'READ_ONLY' || this.mode === 'quota-write' ? 'QUOTA_EXHAUSTED' : undefined,
+        failureClass: request.executionMode === 'READ_ONLY' || this.mode === 'quota-write' || this.mode === 'quota-write-no-effects'
+          ? 'QUOTA_EXHAUSTED'
+          : undefined,
         retryAt: '2026-08-14T23:00:00.000Z',
         rawFailureEvidence: 'quota exhausted; retry-after: 3600',
         requestPrompt: request.promptText,
@@ -163,6 +165,15 @@ describe('Recovery-aware fallback orchestration', () => {
             displayName: 'Mock B',
             reasoning: { strategy: 'highest-supported' },
           },
+          codex_explicit: {
+            targetId: 'codex_explicit',
+            platformId: 'codex',
+            modelId: 'codex-model',
+            displayName: 'Fixture Codex',
+            aliases: ['codex', 'codex-model'],
+            reasoning: { strategy: 'highest-supported' },
+            explicitOnly: true,
+          },
         },
         roleRankings: {
           PLANNER: ['target_a', 'target_b'],
@@ -176,10 +187,11 @@ describe('Recovery-aware fallback orchestration', () => {
     });
   }
 
-  function makeRegistry(a: RecoveryTestAdapter, b: RecoveryTestAdapter): AdapterRegistry {
+  function makeRegistry(a: RecoveryTestAdapter, b: RecoveryTestAdapter, codex?: RecoveryTestAdapter): AdapterRegistry {
     const registry = new AdapterRegistry();
     registry.register(a);
     registry.register(b);
+    if (codex) registry.register(codex);
     return registry;
   }
 
@@ -260,9 +272,119 @@ describe('Recovery-aware fallback orchestration', () => {
     expect(b.calls).toHaveLength(0);
   });
 
+  it('blocks CONTINUE without an exact persisted session ID before invoking a worker', async () => {
+    const a = new RecoveryTestAdapter('mock-a', 'success');
+    const b = new RecoveryTestAdapter('mock-b', 'success');
+    const jobId = 'job-continue-without-session';
+    const jobDir = await initMailboxJob(jobId, {
+      schemaVersion: 2,
+      jobId,
+      projectId: 'recovery',
+      baseSha,
+      intent: 'plan',
+      executionMode: 'READ_ONLY',
+      round: 1,
+      revision: 1,
+      workerSelection: { targetId: 'target_a' },
+      sessionPolicy: 'CONTINUE',
+    }, { 'brief.md': 'Continue only when the exact session is available.\n' });
+    const orchestrator = new Orchestrator(
+      makeConfig(),
+      new Ledger(path.join(root, 'ledger-continue-without-session.json')),
+      makeRegistry(a, b),
+      new TargetAvailabilityLedger(path.join(root, 'availability-continue-without-session.json'))
+    );
+
+    await orchestrator.tick();
+
+    const status = JSON.parse(fs.readFileSync(path.join(jobDir, 'status.json'), 'utf8'));
+    expect(status.state).toBe('BLOCKED');
+    expect(status.error).toMatch(/SESSION_ID_UNAVAILABLE/);
+    expect(a.calls).toHaveLength(0);
+    expect(b.calls).toHaveLength(0);
+  });
+
+  it('allows an explicitly authorized Codex fallback for a read-only quota failure', async () => {
+    const a = new RecoveryTestAdapter('mock-a', 'quota-read');
+    const b = new RecoveryTestAdapter('mock-b', 'success');
+    const codex = new RecoveryTestAdapter('codex', 'success');
+    const jobId = 'job-explicit-codex-read-fallback';
+    const jobDir = await initMailboxJob(jobId, {
+      schemaVersion: 2,
+      jobId,
+      projectId: 'recovery',
+      baseSha,
+      intent: 'plan',
+      executionMode: 'READ_ONLY',
+      round: 1,
+      revision: 1,
+      workerSelection: {
+        targetId: 'target_a',
+        fallbackSelection: { targetId: 'codex_explicit', platform: 'codex', model: 'codex-model' },
+      },
+    }, { 'brief.md': 'Produce a plan with an explicit fallback.\n' });
+    const orchestrator = new Orchestrator(
+      makeConfig(),
+      new Ledger(path.join(root, 'ledger-codex-read.json')),
+      makeRegistry(a, b, codex),
+      new TargetAvailabilityLedger(path.join(root, 'availability-codex-read.json'))
+    );
+
+    await orchestrator.tick();
+
+    const status = JSON.parse(fs.readFileSync(path.join(jobDir, 'status.json'), 'utf8'));
+    expect(status.state).toBe('WORKER_RETURNED');
+    expect(status.currentWorker.targetId).toBe('codex_explicit');
+    expect(a.calls).toHaveLength(1);
+    expect(codex.calls).toHaveLength(1);
+    expect(b.calls).toHaveLength(0);
+  });
+
+  it('allows an explicitly authorized Codex fallback for a write quota failure with no source effects', async () => {
+    const a = new RecoveryTestAdapter('mock-a', 'quota-write-no-effects');
+    const b = new RecoveryTestAdapter('mock-b', 'success');
+    const codex = new RecoveryTestAdapter('codex', 'success');
+    const jobId = 'job-explicit-codex-write-fallback';
+    const jobDir = await initMailboxJob(jobId, {
+      schemaVersion: 2,
+      jobId,
+      projectId: 'recovery',
+      baseSha,
+      intent: 'implement',
+      executionMode: 'WORKTREE_WRITE',
+      round: 1,
+      revision: 1,
+      workerSelection: {
+        targetId: 'target_a',
+        fallbackSelection: { targetId: 'codex_explicit', platform: 'codex', model: 'codex-model' },
+      },
+      ownerApproval: { approved: true, approvedBy: 'Doc' },
+    }, {
+      'brief.md': 'Implement the approved change.\n',
+      'plan.md': 'Write the source change.\n',
+      'review.md': 'Approved.\n',
+    });
+    const orchestrator = new Orchestrator(
+      makeConfig(),
+      new Ledger(path.join(root, 'ledger-codex-write.json')),
+      makeRegistry(a, b, codex),
+      new TargetAvailabilityLedger(path.join(root, 'availability-codex-write.json'))
+    );
+
+    await orchestrator.tick();
+
+    const status = JSON.parse(fs.readFileSync(path.join(jobDir, 'status.json'), 'utf8'));
+    expect(status.state).toBe('WORKER_RETURNED');
+    expect(status.currentWorker.targetId).toBe('codex_explicit');
+    expect(a.calls).toHaveLength(1);
+    expect(codex.calls).toHaveLength(1);
+    expect(b.calls).toHaveLength(0);
+  });
+
   it('stops write fallback after source effects and publishes an interrupted recovery state', async () => {
     const a = new RecoveryTestAdapter('mock-a', 'quota-write');
     const b = new RecoveryTestAdapter('mock-b', 'success');
+    const codex = new RecoveryTestAdapter('codex', 'success');
     const jobId = 'job-write-interrupted';
     const jobDir = await initMailboxJob(jobId, {
       schemaVersion: 2,
@@ -273,7 +395,10 @@ describe('Recovery-aware fallback orchestration', () => {
       executionMode: 'WORKTREE_WRITE',
       round: 1,
       revision: 1,
-      workerSelection: { model: 'auto' },
+      workerSelection: {
+        targetId: 'target_a',
+        fallbackSelection: { targetId: 'codex_explicit', platform: 'codex', model: 'codex-model' },
+      },
       ownerApproval: { approved: true, approvedBy: 'Doc' },
     }, {
       'brief.md': 'Implement the approved change.\n',
@@ -284,7 +409,7 @@ describe('Recovery-aware fallback orchestration', () => {
     const orchestrator = new Orchestrator(
       makeConfig(),
       ledger,
-      makeRegistry(a, b),
+      makeRegistry(a, b, codex),
       new TargetAvailabilityLedger(path.join(root, 'availability.json'))
     );
 
@@ -299,11 +424,20 @@ describe('Recovery-aware fallback orchestration', () => {
     expect(fs.existsSync(record!.worktreePath!)).toBe(true);
     expect(fs.existsSync(path.join(record!.worktreePath!, 'partial-source.js'))).toBe(true);
     expect(b.calls).toHaveLength(0);
+    expect(codex.calls).toHaveLength(0);
     const implementationCapsule = JSON.parse(
       fs.readFileSync(path.join(jobDir, 'rounds', '001', 'recovery-capsule.json'), 'utf8')
     );
     expect(implementationCapsule.contract.revision).toBe(1);
     expect(implementationCapsule.contract.ownerApproval.approved).toBe(true);
+    expect(implementationCapsule.sourceWorker).toMatchObject({
+      targetId: 'target_a',
+      platform: 'mock-a',
+      model: 'mock-a-model',
+      reasoning: 'high',
+      sessionId: 'session-mock-a',
+    });
+    expect(implementationCapsule.currentState.worktreePath).toBe(record!.worktreePath);
 
     fs.writeFileSync(
       path.join(jobDir, 'job.json'),

@@ -87,4 +87,38 @@ describe('Ledger (Persistent Idempotency & Crash Recovery)', () => {
     const record = reloaded.getJobRecord('job-interrupted');
     expect(record?.state).toBe('INTERRUPTED');
   });
+
+  it('persists the resolved native reasoning with the session identity', () => {
+    const ledger = new Ledger(tmpLedgerPath);
+    ledger.recordStart(
+      'job-native-reasoning',
+      'ashley',
+      'READ_ONLY',
+      'plan',
+      2,
+      1,
+      null,
+      'codex',
+      'gpt-5.6-sol',
+      'C:\\workers\\job-native-reasoning',
+      null,
+      'codex-session-001',
+      'codex_explicit',
+      'PLANNER',
+      false,
+      null,
+      'abcdef1234567890',
+      'max',
+    );
+
+    expect(ledger.getJobRecord('job-native-reasoning')).toMatchObject({
+      platform: 'codex',
+      model: 'gpt-5.6-sol',
+      reasoning: 'max',
+      platformSessionId: 'codex-session-001',
+      worktreePath: 'C:\\workers\\job-native-reasoning',
+      lastHandledMode: 'READ_ONLY',
+    });
+    expect(new Ledger(tmpLedgerPath).getJobRecord('job-native-reasoning')?.reasoning).toBe('max');
+  });
 });

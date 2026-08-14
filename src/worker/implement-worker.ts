@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   ImplementResult,
   OwnerApproval,
@@ -8,10 +9,11 @@ import {
   RecoveryCapsule,
   RecoveryCurrentState,
   WorkerRoundResult,
+  WorkerSessionIdentity,
 } from '../types.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { getDiffCheck, isWorkingTreeClean } from '../git/repo-guard.js';
-import { WorkerAdapter } from './worker-adapter.js';
+import { WorkerAdapter, WorkerAdapterError } from './worker-adapter.js';
 import { logger } from '../utils/logger.js';
 import { sanitizeSecrets } from '../utils/sanitizer.js';
 import { buildRecoveryCapsule, captureWorktreeState } from '../engine/recovery-capsule.js';
@@ -23,6 +25,35 @@ function hasSourceEffects(state: RecoveryCurrentState, baseSha: string): boolean
   if (state.inspectionFailed || status.startsWith('GIT_INSPECTION_ERROR:')) return true;
   if (status.length > 0) return true;
   return Boolean(state.headSha && state.headSha.trim() && state.headSha.trim() !== baseSha.trim());
+}
+
+async function isCompatibleRecoveryWorktree(
+  worktreePath: string,
+  baseSha: string,
+  recoveryCapsule: RecoveryCapsule,
+): Promise<boolean> {
+  if (!fs.existsSync(worktreePath) || !recoveryCapsule.currentState.branch) return false;
+  if (recoveryCapsule.contract.executionMode && recoveryCapsule.contract.executionMode !== 'WORKTREE_WRITE') return false;
+  if (recoveryCapsule.contract.baseSha !== baseSha || recoveryCapsule.currentState.baseSha !== baseSha) return false;
+
+  const capsulePath = path.resolve(recoveryCapsule.currentState.worktreePath);
+  const candidatePath = path.resolve(worktreePath);
+  const pathsMatch = process.platform === 'win32'
+    ? capsulePath.toLowerCase() === candidatePath.toLowerCase()
+    : capsulePath === candidatePath;
+  if (!pathsMatch) return false;
+
+  try {
+    const [{ stdout: branch }, { stdout: head }] = await Promise.all([
+      execFileAsync('git', ['-C', worktreePath, 'branch', '--show-current'], { windowsHide: true }),
+      execFileAsync('git', ['-C', worktreePath, 'rev-parse', 'HEAD'], { windowsHide: true }),
+    ]);
+    if (branch.trim() !== recoveryCapsule.currentState.branch.trim()) return false;
+    if (recoveryCapsule.currentState.headSha && head.trim() !== recoveryCapsule.currentState.headSha.trim()) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function fallbackEvidence(roundResult: WorkerRoundResult): NonNullable<WorkerRoundResult['evidence']> {
@@ -75,6 +106,7 @@ export class ImplementWorker {
         solReview: reviewText,
         ownerApproval,
         baseSha,
+        executionMode: 'WORKTREE_WRITE',
         executionConstraints: [
           'WORKTREE_WRITE source changes are limited to the isolated worktree.',
           'Do not push from the worker session.',
@@ -85,8 +117,8 @@ export class ImplementWorker {
         targetId,
         platform: adapter.platformId,
         model: roundResult.modelId || model,
-        reasoning: roundResult.variant,
-        sessionId: roundResult.platformSessionId || sessionId,
+        reasoning: roundResult.sessionIdentity?.reasoning || roundResult.variant,
+        sessionId: roundResult.sessionIdentity?.sessionId || roundResult.platformSessionId || sessionId,
         requestPrompt: roundResult.requestPrompt || promptText,
         startedAt: roundResult.startedAt,
         endedAt: roundResult.completedAt,
@@ -202,7 +234,8 @@ ${sanitizeSecrets(roundResult?.responseText?.slice(-2000).trim() || 'No worker r
     preservedWorktreePath?: string,
     targetId?: string,
     contractRevision = 1,
-    ownerApproval?: OwnerApproval
+    ownerApproval?: OwnerApproval,
+    sessionIdentity?: WorkerSessionIdentity
   ): Promise<ImplementResult> {
     const adapter = adapterOverride || this.defaultAdapter;
     const model = modelOverride || '';
@@ -245,7 +278,10 @@ ${sanitizeSecrets(roundResult?.responseText?.slice(-2000).trim() || 'No worker r
         };
       }
 
-      if (preservedWorktreePath && fs.existsSync(preservedWorktreePath)) {
+      const canReusePreservedWorktree = preservedWorktreePath && recoveryCapsule
+        ? await isCompatibleRecoveryWorktree(preservedWorktreePath, baseSha, recoveryCapsule)
+        : false;
+      if (preservedWorktreePath && canReusePreservedWorktree) {
         worktreePath = preservedWorktreePath;
         const { stdout: branchOut } = await execFileAsync('git', ['-C', worktreePath, 'branch', '--show-current'], {
           windowsHide: true,
@@ -299,11 +335,26 @@ ${JSON.stringify(recoveryCapsule)}
         executionMode: 'WORKTREE_WRITE',
         worktreeCwd: worktreePath,
         promptText,
+        targetId,
         modelId: model,
         variant: variantOverride,
         sessionId,
+        sessionIdentity,
         timeoutSeconds,
       });
+
+      lastRoundResult = {
+        ...lastRoundResult,
+        sessionIdentity: {
+          targetId: targetId ?? lastRoundResult.sessionIdentity?.targetId,
+          platform: adapter.platformId,
+          model: lastRoundResult.modelId || model,
+          reasoning: lastRoundResult.sessionIdentity?.reasoning ?? (lastRoundResult.variant || variantOverride),
+          sessionId: lastRoundResult.sessionIdentity?.sessionId || lastRoundResult.platformSessionId || lastRoundResult.evidence?.sessionId || sessionId,
+          worktreeCwd: worktreePath,
+          executionMode: 'WORKTREE_WRITE',
+        },
+      };
 
       lastState = await captureWorktreeState(worktreePath, baseSha);
       sourceEffectsPresent = hasSourceEffects(lastState, baseSha);
@@ -366,7 +417,8 @@ ${JSON.stringify(recoveryCapsule)}
           model: lastRoundResult.modelId || model,
           targetId,
           variant: lastRoundResult.variant,
-          sessionId: lastRoundResult.platformSessionId || sessionId,
+          sessionId: lastRoundResult.sessionIdentity?.sessionId || lastRoundResult.platformSessionId || sessionId,
+          sessionIdentity: lastRoundResult.sessionIdentity,
           workerBranch,
           headSha: lastState.headSha,
           filesChanged: lastState.filesChanged,
@@ -477,7 +529,8 @@ ${JSON.stringify(recoveryCapsule)}
           model: lastRoundResult.modelId || model,
           targetId,
           variant: lastRoundResult.variant,
-          sessionId: lastRoundResult.platformSessionId || sessionId,
+          sessionId: lastRoundResult.sessionIdentity?.sessionId || lastRoundResult.platformSessionId || sessionId,
+          sessionIdentity: lastRoundResult.sessionIdentity,
           workerBranch,
           headSha: lastState.headSha,
           filesChanged: lastState.filesChanged,
@@ -539,7 +592,8 @@ ${JSON.stringify(recoveryCapsule)}
         model: lastRoundResult.modelId,
         targetId,
         variant: lastRoundResult.variant,
-        sessionId: lastRoundResult.platformSessionId || sessionId,
+        sessionId: lastRoundResult.sessionIdentity?.sessionId || lastRoundResult.platformSessionId || sessionId,
+        sessionIdentity: lastRoundResult.sessionIdentity,
         workerBranch,
         headSha: commitRes.headSha,
         filesChanged: lastState.filesChanged,
@@ -568,6 +622,16 @@ ${JSON.stringify(recoveryCapsule)}
         }
       }
       const errorText = `Exception during implementation: ${err.message || String(err)}`;
+      const failureClass = err instanceof WorkerAdapterError ? err.failureClass : 'PROCESS_FAILED';
+      const failedSessionIdentity: WorkerSessionIdentity = lastRoundResult?.sessionIdentity || {
+        targetId: sessionIdentity?.targetId ?? targetId,
+        platform: sessionIdentity?.platform || adapter.platformId,
+        model: sessionIdentity?.model || model,
+        reasoning: sessionIdentity?.reasoning ?? variantOverride,
+        sessionId: sessionIdentity?.sessionId || sessionId,
+        worktreeCwd: sessionIdentity?.worktreeCwd || worktreePath,
+        executionMode: 'WORKTREE_WRITE',
+      };
       const recoveryEvidence = sourceEffectsPresent && lastState && lastRoundResult
         ? this.createRecoveryCapsule(
             jobId,
@@ -583,7 +647,7 @@ ${JSON.stringify(recoveryCapsule)}
             model,
             sessionId,
             promptText,
-            { ...lastRoundResult, failureClass: lastRoundResult.failureClass || 'PROCESS_FAILED', exitCode: 1 },
+            { ...lastRoundResult, failureClass: lastRoundResult.failureClass || failureClass, exitCode: 1 },
             lastState,
             ['implementation execution raised an exception', 'authoritative verification and publication may be incomplete']
           )
@@ -596,7 +660,8 @@ ${JSON.stringify(recoveryCapsule)}
         model,
         targetId,
         variant: variantOverride,
-        sessionId,
+        sessionId: failedSessionIdentity.sessionId,
+        sessionIdentity: failedSessionIdentity,
         workerBranch: workerBranch || `worker/${projectId}/${jobId}`,
         headSha: lastState?.headSha,
         filesChanged: lastState?.filesChanged || [],
@@ -605,7 +670,8 @@ ${JSON.stringify(recoveryCapsule)}
         diffCheckPassed: false,
         dirtyRemaining: sourceEffectsPresent,
         exitCode: 1,
-        failureClass: 'PROCESS_FAILED',
+        failureClass,
+        rawFailureEvidence: err.message || String(err),
         sourceEffectsPresent,
         worktreePath: sourceEffectsPresent ? worktreePath : undefined,
         currentHeadSha: lastState?.headSha,
