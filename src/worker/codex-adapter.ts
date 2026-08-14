@@ -23,7 +23,7 @@ const MAX_EVENTS = 128;
 export const DEFAULT_CODEX_PATH = 'codex';
 
 function isDefaultCodexExecutable(executable: string): boolean {
-  return executable === DEFAULT_CODEX_PATH || executable === 'codex.exe' || executable === 'codex.cmd';
+  return executable === DEFAULT_CODEX_PATH;
 }
 
 function sessionIds(value: unknown, found: string[] = []): string[] {
@@ -57,12 +57,14 @@ export class CodexAdapter implements WorkerAdapter {
   readonly platformId = 'codex';
   readonly supportsCrossModelSessionContinuation = false;
   private executable: string;
+  private readonly executableWasExplicitlyConfigured: boolean;
   private processManager: ProcessManager;
   private cachedModels: DiscoveredModel[] | null = null;
   private cacheTimestamp = 0;
 
-  constructor(executable = DEFAULT_CODEX_PATH, processManager?: ProcessManager) {
-    this.executable = executable;
+  constructor(executable?: string, processManager?: ProcessManager) {
+    this.executableWasExplicitlyConfigured = executable !== undefined;
+    this.executable = executable ?? DEFAULT_CODEX_PATH;
     this.processManager = processManager || new ProcessManager();
   }
 
@@ -77,7 +79,7 @@ export class CodexAdapter implements WorkerAdapter {
   async inspectEnvironment(): Promise<WorkerPlatformInfo> {
     const configured = this.executable;
     const candidates = [configured];
-    if (isDefaultCodexExecutable(configured)) {
+    if (!this.executableWasExplicitlyConfigured && isDefaultCodexExecutable(configured)) {
       if (process.platform === 'win32') {
         try {
           const where = await this.runDirect('where.exe', ['codex.exe', 'codex.cmd']);
