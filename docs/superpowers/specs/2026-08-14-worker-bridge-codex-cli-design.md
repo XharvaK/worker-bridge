@@ -69,7 +69,7 @@ The installed help evidence establishes these capabilities:
 - A prompt may be supplied as an argument or through stdin using `-`.
 - `codex debug models --bundled` renders the bundled model catalog as JSON.
 
-The local bundled catalog was read without running inference. It contained model metadata for `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.2`, and `codex-auto-review`. Supported native reasoning values varied by model. The implementation MUST discover this data at runtime and MUST NOT encode this current catalog as permanent policy.
+The local bundled catalog was read without running inference. It contained model metadata for `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.2`, and `codex-auto-review`. The catalog exposed `visibility` metadata with `list` and `hide` values, `supported_in_api` metadata, and per-profile descriptions. Supported native reasoning values varied by model. The implementation MUST discover this data at runtime and MUST NOT encode this current catalog as permanent policy.
 
 The local Codex configuration also provided the native reasoning key:
 
@@ -99,29 +99,37 @@ The policy adds a Codex platform capability and an explicit-only target binding.
 
 The generic target contract therefore supports a target without a fixed `modelId` when its `modelBinding` requires an explicit discovered model. Fixed targets continue to require exact policy `modelId` values. Alias resolution remains policy-defined and exact; model-family fuzzy matching is prohibited.
 
-An explicit Codex request MUST identify Codex through the policy target, platform, or Codex alias and MUST provide a model. An explicit model that is not present in the discovered catalog fails closed with `MODEL_NOT_FOUND`. If the catalog cannot be obtained or parsed, the request fails closed with `MODEL_DISCOVERY_UNAVAILABLE`. No alternate model is selected.
+An explicit Codex request MUST identify Codex through the policy target, platform, or Codex alias and MUST provide a model. The selected model MUST satisfy all of these checks:
+
+1. The exact requested model ID matches a discovered catalog ID.
+2. The discovered metadata marks the model as user-selectable. The Codex parser normalizes provider visibility/selectability metadata into the generic discovered-model contract. A known non-selectable model fails closed with `MODEL_NOT_SELECTABLE`.
+3. The model satisfies generic Worker Bridge capability constraints for the requested execution mode and authority envelope.
+
+The selector MUST NOT reject a model by a permanently hardcoded model-ID list. A model that is absent from the catalog fails closed with `MODEL_NOT_FOUND`. If the catalog cannot be obtained or parsed, the request fails closed with `MODEL_DISCOVERY_UNAVAILABLE`. No alternate model is selected. Catalog validity and selectability do not prove authentication, account access, runtime availability, or quota.
 
 The selector remains generic. It resolves explicit targets through the same target-resolution path as every other platform. Codex-specific behavior belongs in the adapter, catalog parser, and policy binding.
 
 ## Model discovery and runtime availability
 
-Codex model discovery has two separate meanings:
+Codex model discovery has separate meanings:
 
 1. `codex debug models --bundled` establishes installed CLI catalog metadata.
-2. Invocation evidence establishes whether the current account/configuration can run the selected model now.
+2. Catalog selectability metadata establishes whether the model is user-selectable through the CLI.
+3. Invocation evidence establishes whether the current account/configuration can run the selected model now.
 
 Catalog membership MUST NOT be treated as authentication, access, quota, or current runtime availability.
 
 The platform state model keeps these facts distinct:
 
 - catalog-valid / discovered;
+- user-selectable / non-user-selectable / unknown selectability;
 - configured and authenticated;
 - currently runnable;
 - quota available;
 - temporarily unavailable;
 - unknown.
 
-The adapter may report catalog-valid explicit targets while runtime availability remains `UNKNOWN`. It MUST NOT fabricate access or quota state. Authoritative Codex errors are normalized through the existing operational failure taxonomy and target-keyed availability/cooldown ledger. Bounded sanitized stdout/stderr and structured event evidence are retained with the failure.
+The adapter may report catalog-valid and user-selectable explicit targets while runtime availability remains `UNKNOWN`. It MUST NOT fabricate access or quota state. Authoritative Codex errors are normalized through the existing operational failure taxonomy and target-keyed availability/cooldown ledger. Bounded sanitized stdout/stderr and structured event evidence are retained with the failure.
 
 The adapter discovery path MUST resolve the configured executable first. When the default executable is used, it may locate and verify a runnable per-user standalone release. It MUST NOT silently replace an explicitly configured executable with another binary. The inaccessible Windows App path is not a valid fallback executable.
 
@@ -129,11 +137,15 @@ The adapter discovery path MUST resolve the configured executable first. When th
 
 Codex is explicit-only at the platform/model target level. Explicit reasoning is optional.
 
-When Doc selects Codex and an exact model but omits reasoning, the adapter resolves the highest native reasoning level supported by that selected model. “Highest” is derived from discovered model metadata, not from a hardcoded universal ordering or a fabricated value. The native model representation is preserved in the invocation.
+The normalized discovered-model contract represents each reasoning profile with its native value and a metadata-derived topology classification: `ORDINARY`, `TOPOLOGY_CHANGING`, or `UNKNOWN`. The Codex catalog parser derives this classification from provider metadata such as an explicit topology/delegation field or a provider description that clearly states the topology effect. It MUST NOT identify a topology-changing profile solely because of a particular profile string.
 
-When Doc explicitly selects a reasoning level, the adapter validates it against the selected model’s discovered supported values and uses that exact native value. Unknown or unsupported explicit reasoning fails closed with `REASONING_PROFILE_UNSUPPORTED`.
+When Doc selects Codex and an exact model but omits reasoning, the adapter resolves the highest discovered `ORDINARY` reasoning profile. It MUST NOT silently select a profile whose topology is `TOPOLOGY_CHANGING` or `UNKNOWN`. If the catalog does not safely establish the topology of the candidate highest profile, reasoning resolution fails closed with `REASONING_PROFILE_UNSUPPORTED` rather than silently escalating execution topology. The native model representation is preserved in the invocation.
+
+When Doc explicitly selects a reasoning level, the adapter validates it against the selected model’s discovered supported values and topology metadata, then uses that exact native value. An explicitly selected `TOPOLOGY_CHANGING` profile is allowed only when the adapter can prove that delegated work remains inside the same Worker Bridge authority envelope: the bound worktree, sandbox mode, approval mode, network/filesystem restrictions, and generic owner-approval rules remain effective. If that proof is unavailable, the request fails closed with `REASONING_PROFILE_UNSUPPORTED` or `PERMISSION_BLOCKED`. Unknown or unsupported explicit reasoning fails closed with `REASONING_PROFILE_UNSUPPORTED`.
 
 The adapter MUST NOT downgrade, upgrade, or substitute a reasoning profile to make a request runnable. An explicit model remains valid independently from runtime access; runtime failure is reported separately through availability/failure normalization.
+
+For the currently observed Sol/Terra metadata, the descriptions identify `max` as ordinary maximum reasoning and `ultra` as automatic task delegation. Therefore omitted reasoning resolves to `max`, while explicit `ultra` is accepted when the selected execution envelope proves delegation-safe. For Luna, or any model whose highest supported profile is ordinary, the actual highest ordinary native value is selected. These outcomes come from discovered profile metadata; the implementation MUST NOT permanently special-case the string `ultra`.
 
 ## Invocation and authority restrictions
 
@@ -145,19 +157,37 @@ Invocation requirements:
 - use `--sandbox read-only` for `READ_ONLY`;
 - use `--sandbox workspace-write` for `WORKTREE_WRITE`;
 - use `--ask-for-approval never` so the bridge remains the approval boundary;
+- use `--ignore-user-config` so user-level Codex configuration cannot alter controlled execution semantics;
 - use `--model` with the exact resolved model ID;
 - use native `model_reasoning_effort` configuration when a resolved profile exists;
 - use `--json` and capture bounded JSONL evidence;
 - retain the last-message/structured output when available;
 - never use `danger-full-access`, dangerous bypass flags, merge, deploy, push, or main/master mutation paths.
 
-The generic process manager remains responsible for `shell: false`, safe Windows `.cmd`/`.bat` invocation, timeout, cancellation, bounded stdout/stderr, and incremental capture. CodexAdapter supplies only platform-specific arguments and parsing.
+The generic process manager remains responsible for `shell: false`, safe Windows `.cmd`/`.bat` invocation, timeout, cancellation, bounded stdout/stderr, and incremental capture. CodexAdapter supplies only platform-specific arguments, project-config authority validation, and parsing.
+
+## Codex configuration authority boundary
+
+Worker Bridge remains the authority boundary. CodexAdapter MUST NOT silently inherit user-level Codex configuration that can expand worker capabilities or change bridge-controlled execution semantics. `--ignore-user-config` is required for both initial `exec` and `exec resume` invocations.
+
+Authentication remains Codex-owned through the normal authenticated CLI and `CODEX_HOME` mechanism. Worker Bridge MUST NOT extract, copy, parse, persist, or independently refresh Codex authentication material. `--ignore-user-config` controls configuration inheritance; it does not authorize credential handling by the bridge.
+
+Project-scoped `.codex/config.toml` requires a separate bounded preflight because `--ignore-user-config` does not by itself establish that project configuration is safe. Before invocation, the adapter examines project-scoped Codex configuration visible from the bound worktree and relevant repository ancestor paths. The preflight is a generic execution-authority check, not an orchestrator branch.
+
+The preflight uses a strict, bounded configuration classifier:
+
+- recognized non-authority project semantics MAY remain active;
+- explicit Worker Bridge arguments always bind model, native reasoning profile, cwd/worktree, sandbox mode, and approval mode;
+- configuration that adds MCP/tool execution, hooks/plugins, alternate providers or endpoints, network access, broader filesystem access, elevation, sandbox/approval changes, or equivalent capability-bearing behavior is rejected before invocation;
+- unknown or unparsable project configuration is rejected before invocation because the bridge cannot prove that it is authority-safe.
+
+An unsafe project configuration fails closed as `PERMISSION_BLOCKED` with bounded reason evidence. The bridge does not edit, delete, or copy the project configuration. This preserves safe project semantics while preventing an unproven configuration from silently expanding authority. The same authority classification remains available to future adapters through the generic worker execution-context contract.
 
 ## Session and continuation behavior
 
 An initial invocation captures the exact Codex session identifier from unambiguous machine-readable JSONL evidence when the CLI provides it. The adapter MUST retain the platform, logical model, exact resolved model ID, native reasoning profile, session ID, worktree, and authority mode in the round result and Recovery Capsule.
 
-`codex exec resume <session-id>` is used only when the exact session ID is present and all continuation identity fields match. A `CONTINUE` round MUST remain bound to:
+`codex exec resume <session-id>` is used only when the exact session ID is present and all continuation identity fields match. Both initial and resumed invocations use `--ignore-user-config`. A `CONTINUE` round MUST remain bound to:
 
 - platform `codex`;
 - the exact Codex session ID;
@@ -216,9 +246,13 @@ Tests use fixtures and mocks only. They cover:
 - no Codex from automatic selection, automatic fallback, cooldown reranking, or reviewer diversification;
 - explicit Codex target/platform/model resolution;
 - dynamic catalog parsing and exact model membership;
+- discovered but non-user-selectable model rejection without model-ID hardcoding;
 - catalog-valid versus runtime-unknown availability;
-- highest-supported native reasoning by default;
+- highest ordinary native reasoning by default;
+- explicit topology-changing reasoning only when metadata and the authority envelope prove it safe;
 - exact explicit reasoning acceptance and closed failure for unsupported values;
+- user-level configuration isolation through `--ignore-user-config`;
+- project configuration authority containment, including safe, capability-bearing, and unknown/unparsable configurations;
 - exact `exec` and `exec resume` argument construction;
 - unambiguous session-ID capture and closed failure for unsafe continuation;
 - explicit same-producer Codex reviewer override;
