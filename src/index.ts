@@ -38,7 +38,7 @@ async function main() {
   const orchestrator = new Orchestrator(configManager);
 
   if (command === 'start') {
-    logger.info('Starting Worker Bridge daemon (Antigravity & OpenCode)...');
+    logger.info('Starting Worker Bridge daemon (Antigravity, OpenCode, and explicit-only Codex)...');
 
     const shutdown = () => {
       logger.info('Received shutdown signal. Stopping gracefully...');
@@ -78,7 +78,9 @@ async function main() {
   } else {
     console.log(`
 Worker Bridge - Platform-Agnostic Headless AI Worker Daemon
-Supported Platforms: Antigravity (AGY), OpenCode
+Supported Platforms: Antigravity (AGY), OpenCode, Codex CLI (explicit-only target)
+
+Codex is explicit-only: select policy alias codex_explicit with an exact discovered model. It is never selected automatically.
 
 Commands:
   start [--config=<path>]       Start the continuous mailbox polling daemon

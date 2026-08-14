@@ -1,6 +1,6 @@
 # Worker Bridge (`worker-bridge`)
 
-A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGPT / Architect & Adversarial Reviewer) to multi-platform headless AI workers (**Google Antigravity** and **OpenCode**) via a private GitHub mailbox repository.
+A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGPT / Architect & Adversarial Reviewer) to multi-platform headless AI workers (**Google Antigravity**, **OpenCode**, and explicit-only **Codex CLI**) via a private GitHub mailbox repository.
 
 ---
 
@@ -13,13 +13,13 @@ A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGP
                 WORKER BRIDGE
                  /          \
                 /            \
-      AntigravityAdapter    OpenCodeAdapter
-             |                    |
-             v                    v
-            AGY                OpenCode CLI
-             |                    |
-             v                    v
-       selected model        selected model
+      AntigravityAdapter    OpenCodeAdapter       CodexAdapter
+             |                    |              (explicit-only)
+             v                    v                    v
+            AGY                OpenCode CLI        Codex CLI
+             |                    |                    |
+             v                    v                    v
+       selected model        selected model       exact selected model
 ```
 
 1. **Workflow Ownership**: The JOB belongs to Sol/Doc. Worker platforms and models are replaceable execution substrates.
@@ -35,11 +35,13 @@ A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGP
    - `READ_ONLY` mode (`plan`, `design`, `investigate`, `review`, `audit`) is authorized directly by initial dispatch.
    - `WORKTREE_WRITE` mode (`implement`, `fix`) strictly requires explicit owner approval (`ownerApproval: { approved: true }`).
 4. **Highest Reasoning Default**:
-   - Models default to their highest supported reasoning profile (`--effort high` for AGY, `--variant max` / `high` for OpenCode) unless explicitly overridden.
+   - AGY and OpenCode use their existing highest supported profiles unless explicitly overridden. An explicit Codex model with omitted reasoning resolves to the highest discovered ordinary native profile. Unknown topology fails closed.
 5. **Opus Policy**:
    - Claude Opus (`claude-opus-4-6-thinking`) is strictly **`EXPLICIT_ONLY`** to preserve quota. Excluded from all automatic rankings and fallbacks.
 6. **Authoritative Bridge Verification**:
    - `IMPLEMENTATION_READY` is granted exclusively on bridge-observed test execution and diff checks. Model prose is never accepted as verification evidence.
+7. **Codex Policy**:
+   - Codex is **explicit-only**. It is absent from automatic rankings, automatic fallback, cooldown reranking, and reviewer diversification. Catalog validity does not prove authentication, runtime availability, account access, or quota.
 
 ---
 
@@ -54,6 +56,19 @@ A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGP
 - CLI: Official OpenCode CLI (`1.18.15+`)
 - Execution: `opencode run "<prompt>" --dir "<cwd>" -m "<provider/model>" --variant "<variant>" --format json --auto`
 - Models: `opencode/deepseek-v4-flash-free` (variant: `max`), `opencode/hy3-free` (variant: `high`), `opencode/laguna-s-2.1-free` (variant: `high`), `opencode/nemotron-3.5-lightning-free`, `opencode/nemotron-3-ultra-free`, `mistral/*`.
+
+### 3. Codex CLI (`codex`) — explicit-only
+- Target: policy alias `codex_explicit` with `modelBinding: EXPLICIT_DISCOVERED`; no current Codex model ID is hardcoded in policy.
+- Explicit request: provide the Codex platform and the exact catalog model ID, for example:
+  ```json
+  { "targetId": "codex_explicit", "platform": "codex", "model": "<exact-discovered-model>" }
+  ```
+  A raw model ID without an explicit Codex platform, target, or alias does not trigger Codex discovery.
+- Discovery: the adapter uses only `codex debug models --bundled` for the bundled read-only catalog. Exact catalog membership and user selectability are separate from authentication, runtime availability, and quota. Hidden or non-selectable models fail closed with `MODEL_NOT_SELECTABLE`.
+- Reasoning: omitted reasoning selects the highest discovered `ORDINARY` native profile. An explicit profile must be discovered with known topology. Topology-changing reasoning requires an explicit request and authority-envelope proof; the adapter fails closed when that proof is unavailable.
+- Execution and resume: worker execution and exact-session resume use `--ignore-user-config`. The bridge binds the model, native reasoning, worktree/cwd, sandbox, and approval mode. Resume is allowed only with an exact session ID and matching platform, model, reasoning, worktree, execution mode, and authority context. `resume --last` and session-ID inference from prose are not used.
+- Configuration: bounded project `.codex/config.toml` authority inspection rejects unknown, unparsable, or capability-expanding configuration as `PERMISSION_BLOCKED`. The bridge does not copy, edit, or persist Codex credentials or configuration.
+- Fallback: Codex can run only through an explicit, bounded `fallbackSelection`. No automatic fallback can select it. After `WORKTREE_WRITE` source effects, all fallback stops and the existing Recovery Capsule/recovery authorization path remains authoritative.
 
 ---
 
@@ -93,3 +108,5 @@ A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGP
    ```bash
    npm start
    ```
+
+Codex real-provider smoke is not part of `npm test` and was not run for this implementation. The opt-in `test:real-smoke` path remains separate and requires separate authorization.

@@ -345,6 +345,29 @@ describe('ModelSelector & target policy invariants', () => {
     expect(codex.quotaProbeCount).toBe(0);
   });
 
+  it('does not infer a Codex model from an automatic platform-only request', async () => {
+    const targets = {
+      codex_explicit: {
+        targetId: 'codex_explicit',
+        platformId: 'codex',
+        displayName: 'Codex',
+        reasoning: { strategy: 'highest-supported' as const },
+        explicitOnly: true,
+        modelBinding: 'EXPLICIT_DISCOVERED' as const,
+      },
+    };
+    const config = makeConfig(targets, { PLANNER: ['codex_explicit'] });
+    const codex = new FakeAdapter('codex', ['gpt-5']);
+    const registry = new AdapterRegistry();
+    registry.register(codex);
+    const selector = new ModelSelector(registry, config);
+
+    await expect(selector.resolveSelection({ platform: 'codex', model: 'auto' }, 'PLANNER')).rejects.toThrow(
+      'No eligible PLANNER worker targets are available'
+    );
+    expect(codex.quotaProbeCount).toBe(0);
+  });
+
   it('does not infer Codex from a raw model ID without an explicit platform or target', async () => {
     const config = makeConfig({
       codex_explicit: {

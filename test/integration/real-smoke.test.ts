@@ -13,7 +13,9 @@ import { ImplementWorker } from '../../src/worker/implement-worker.js';
 
 const execFileAsync = promisify(execFile);
 
-describe('Real Substrate Smoke Tests (Disposable Fixture)', () => {
+// This file is opt-in through `npm run test:real-smoke` and is excluded from `npm test`.
+// Codex real smoke is intentionally absent and requires separate authorization.
+describe('Opt-in Real Provider Smoke Tests (Disposable Fixture)', () => {
   let tmpBaseDir: string;
   let targetRepoDir: string;
   let workersDir: string;

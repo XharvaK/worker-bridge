@@ -68,6 +68,17 @@ describe('ConfigManager & validateConfig', () => {
     });
   });
 
+  it('does not give the explicit Codex target a fixed model or automatic fallback authority', () => {
+    const config = validateConfig(validConfig);
+    const codex = config.selectionPolicy?.targets.codex_explicit;
+
+    expect(codex?.modelBinding).toBe('EXPLICIT_DISCOVERED');
+    expect(codex?.modelId).toBeUndefined();
+    expect(codex?.explicitOnly).toBe(true);
+    expect(config.platforms?.codex?.defaultModel).toBeUndefined();
+    expect(Object.values(config.selectionPolicy?.roleRankings || {}).flat()).not.toContain('codex_explicit');
+  });
+
   it('rejects fixed targets without a model ID and accepts dynamic targets without one', () => {
     expect(() => validateConfig({
       ...validConfig,
