@@ -1,0 +1,19 @@
+{
+  "mailboxRepoPath": "C:\\Users\\Xharv\\Projects\\gemini-worker-mailbox",
+  "mailboxRemote": "origin",
+  "pollIntervalSeconds": 20,
+  "workerRootDir": "C:\\Users\\Xharv\\Projects\\.workers",
+  "agyExecutable": "agy",
+  "workerModel": "gemini-2.5-flash",
+  "pushWorkerBranches": true,
+  "notificationsEnabled": true,
+  "allowedProjects": {
+    "ashley": {
+      "path": "C:\\Users\\Xharv\\Projects\\composer-assistant",
+      "allowed": true,
+      "defaultBranch": "master",
+      "allowPushWorkerBranch": true,
+      "testCommand": "npm test"
+    }
+  }
+}
