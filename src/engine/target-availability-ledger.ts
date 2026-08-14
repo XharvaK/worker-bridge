@@ -18,9 +18,10 @@ export interface TargetAvailabilityStore {
     observedAt: string,
     retryAt?: string,
     rawEvidence?: string,
-    source?: string
+    source?: string,
+    effectiveModelId?: string
   ): TargetAvailabilityRecord;
-  recordSuccess(targetId: string, target?: WorkerTargetConfig): void;
+  recordSuccess(targetId: string, target?: WorkerTargetConfig, effectiveModelId?: string): void;
 }
 
 interface AvailabilityData {
@@ -99,13 +100,14 @@ export class TargetAvailabilityLedger implements TargetAvailabilityStore {
     observedAt: string,
     retryAt?: string,
     rawEvidence?: string,
-    source = 'provider_error'
+    source = 'provider_error',
+    effectiveModelId?: string
   ): TargetAvailabilityRecord {
     const state: TargetAvailabilityState = retryAt ? 'COOLDOWN' : 'EXHAUSTED';
     const record: TargetAvailabilityRecord = {
       targetId: target.targetId,
       platformId: target.platformId,
-      modelId: target.modelId || '',
+      modelId: effectiveModelId || target.modelId || '',
       state,
       failureClass,
       observedAt,
@@ -118,13 +120,13 @@ export class TargetAvailabilityLedger implements TargetAvailabilityStore {
     return { ...record };
   }
 
-  recordSuccess(targetId: string, target?: WorkerTargetConfig): void {
+  recordSuccess(targetId: string, target?: WorkerTargetConfig, effectiveModelId?: string): void {
     const existing = this.data.targets[targetId];
     if (!existing || existing.state !== 'AVAILABLE') {
       this.data.targets[targetId] = {
         targetId,
         platformId: target?.platformId || existing?.platformId || '',
-        modelId: target?.modelId || existing?.modelId || '',
+        modelId: effectiveModelId || target?.modelId || existing?.modelId || '',
         state: 'AVAILABLE',
         observedAt: new Date().toISOString(),
         source: 'successful_execution',
@@ -157,12 +159,13 @@ export class InMemoryTargetAvailabilityStore implements TargetAvailabilityStore 
     observedAt: string,
     retryAt?: string,
     rawEvidence?: string,
-    source = 'provider_error'
+    source = 'provider_error',
+    effectiveModelId?: string
   ): TargetAvailabilityRecord {
     const record: TargetAvailabilityRecord = {
       targetId: target.targetId,
       platformId: target.platformId,
-      modelId: target.modelId || '',
+      modelId: effectiveModelId || target.modelId || '',
       state: retryAt ? 'COOLDOWN' : 'EXHAUSTED',
       failureClass,
       observedAt,
@@ -174,12 +177,12 @@ export class InMemoryTargetAvailabilityStore implements TargetAvailabilityStore 
     return { ...record };
   }
 
-  recordSuccess(targetId: string, target?: WorkerTargetConfig): void {
+  recordSuccess(targetId: string, target?: WorkerTargetConfig, effectiveModelId?: string): void {
     const existing = this.records.get(targetId);
     this.records.set(targetId, {
       targetId,
       platformId: target?.platformId || existing?.platformId || '',
-      modelId: target?.modelId || existing?.modelId || '',
+      modelId: effectiveModelId || target?.modelId || existing?.modelId || '',
       state: 'AVAILABLE',
       observedAt: new Date().toISOString(),
       source: 'successful_execution',

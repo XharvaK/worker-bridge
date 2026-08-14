@@ -20,21 +20,23 @@ class FakeAdapter implements WorkerAdapter {
   readonly supportsCrossModelSessionContinuation: boolean;
   private readonly models: DiscoveredModel[];
   private readonly quotaState: QuotaProbeResult;
+  quotaProbeCount = 0;
 
   constructor(
     platformId: string,
-    models: string[],
+    models: Array<string | DiscoveredModel>,
     quotaState: QuotaProbeResult = { state: 'UNKNOWN' },
     supportsCrossModelSessionContinuation = false
   ) {
     this.platformId = platformId;
     this.supportsCrossModelSessionContinuation = supportsCrossModelSessionContinuation;
-    this.models = models.map((id) => ({
-      id,
-      displayName: id,
+    this.models = models.map((model) => typeof model === 'string' ? {
+      id: model,
+      displayName: model,
       variants: ['high'],
       highestVariant: 'high',
-    }));
+      selectability: 'SELECTABLE',
+    } : model);
     this.quotaState = quotaState;
   }
 
@@ -56,6 +58,7 @@ class FakeAdapter implements WorkerAdapter {
   }
 
   async probeQuota(): Promise<QuotaProbeResult> {
+    this.quotaProbeCount++;
     return this.quotaState;
   }
 
@@ -315,5 +318,204 @@ describe('ModelSelector & target policy invariants', () => {
     expect((await selector.resolveSelection(undefined, 'PLANNER', new Set(), undefined, retryAt)).targetId).toBe('target_b');
 
     if (fs.existsSync(ledgerPath)) fs.unlinkSync(ledgerPath);
+  });
+
+  it('never automatically selects or probes an explicit-only Codex target', async () => {
+    const targets = {
+      codex_explicit: {
+        targetId: 'codex_explicit',
+        platformId: 'codex',
+        displayName: 'Codex',
+        reasoning: { strategy: 'highest-supported' as const },
+        explicitOnly: true,
+        modelBinding: 'EXPLICIT_DISCOVERED' as const,
+      },
+      target_a: target('target_a', 'fake-a', 'a-model'),
+    };
+    const config = makeConfig(targets, { PLANNER: ['codex_explicit', 'target_a'] });
+    const codex = new FakeAdapter('codex', ['gpt-5']);
+    const registry = new AdapterRegistry();
+    registry.register(codex);
+    registry.register(new FakeAdapter('fake-a', ['a-model']));
+    const selector = new ModelSelector(registry, config);
+
+    const selection = await selector.resolveSelection(undefined, 'PLANNER');
+
+    expect(selection.targetId).toBe('target_a');
+    expect(codex.quotaProbeCount).toBe(0);
+  });
+
+  it('does not infer Codex from a raw model ID without an explicit platform or target', async () => {
+    const config = makeConfig({
+      codex_explicit: {
+        targetId: 'codex_explicit',
+        platformId: 'codex',
+        displayName: 'Codex',
+        aliases: ['codex'],
+        reasoning: { strategy: 'highest-supported' },
+        explicitOnly: true,
+        modelBinding: 'EXPLICIT_DISCOVERED',
+      },
+    }, { PLANNER: [] });
+    const codex = new FakeAdapter('codex', ['gpt-5']);
+    const registry = new AdapterRegistry();
+    registry.register(codex);
+    const selector = new ModelSelector(registry, config);
+
+    await expect(selector.resolveSelection({ model: 'gpt-5' }, 'PLANNER')).rejects.toThrow(
+      'is not configured in local target policy'
+    );
+    expect(codex.quotaProbeCount).toBe(0);
+  });
+
+  it('rejects ambiguous explicit-discovered targets on one platform', async () => {
+    const config = makeConfig({
+      codex_one: {
+        targetId: 'codex_one', platformId: 'codex', displayName: 'Codex one',
+        aliases: ['codex_one'], reasoning: { strategy: 'highest-supported' },
+        explicitOnly: true, modelBinding: 'EXPLICIT_DISCOVERED',
+      },
+      codex_two: {
+        targetId: 'codex_two', platformId: 'codex', displayName: 'Codex two',
+        aliases: ['codex_two'], reasoning: { strategy: 'highest-supported' },
+        explicitOnly: true, modelBinding: 'EXPLICIT_DISCOVERED',
+      },
+    }, { PLANNER: [] });
+    const registry = new AdapterRegistry();
+    registry.register(new FakeAdapter('codex', ['gpt-5']));
+    const selector = new ModelSelector(registry, config);
+
+    await expect(selector.resolveSelection({ platform: 'codex', model: 'gpt-5' }, 'PLANNER')).rejects.toThrow(
+      'ambiguous explicitly discovered targets'
+    );
+  });
+
+  it('returns the exact catalog model identity for an explicit platform request', async () => {
+    const config = makeConfig({
+      codex_explicit: {
+        targetId: 'codex_explicit',
+        platformId: 'codex',
+        displayName: 'Codex',
+        aliases: ['codex'],
+        reasoning: { strategy: 'highest-supported' },
+        explicitOnly: true,
+        modelBinding: 'EXPLICIT_DISCOVERED',
+      },
+    }, { PLANNER: [] });
+    const registry = new AdapterRegistry();
+    registry.register(new FakeAdapter('codex', [{
+      id: 'gpt-5.6-sol',
+      displayName: 'GPT-5.6 Sol',
+      variants: ['max'],
+      selectability: 'SELECTABLE',
+    }]));
+    const selector = new ModelSelector(registry, config);
+
+    await expect(selector.resolveSelection({ platform: 'codex', model: 'GPT-5.6-SOL' }, 'PLANNER')).resolves.toMatchObject({
+      targetId: 'codex_explicit',
+      modelId: 'gpt-5.6-sol',
+      isExplicitOnly: true,
+    });
+  });
+
+  it('rejects a discovered model that is not selectable with a typed failure', async () => {
+    const config = makeConfig({
+      codex_explicit: {
+        targetId: 'codex_explicit',
+        platformId: 'codex',
+        displayName: 'Codex',
+        reasoning: { strategy: 'highest-supported' },
+        explicitOnly: true,
+        modelBinding: 'EXPLICIT_DISCOVERED',
+      },
+    }, { PLANNER: [] });
+    const registry = new AdapterRegistry();
+    registry.register(new FakeAdapter('codex', [{
+      id: 'hidden-model',
+      displayName: 'Hidden model',
+      variants: [],
+      selectability: 'NOT_SELECTABLE',
+    }]));
+    const selector = new ModelSelector(registry, config);
+
+    const error = await selector.resolveSelection({ platform: 'codex', model: 'hidden-model' }, 'PLANNER').catch((value) => value);
+    expect(error.failureClass).toBe('MODEL_NOT_SELECTABLE');
+  });
+
+  it('allows an explicit Codex reviewer override after a same-producer selection', async () => {
+    const config = makeConfig({
+      codex_explicit: {
+        targetId: 'codex_explicit',
+        platformId: 'codex',
+        displayName: 'Codex',
+        aliases: ['codex'],
+        reasoning: { strategy: 'highest-supported' },
+        explicitOnly: true,
+        modelBinding: 'EXPLICIT_DISCOVERED',
+      },
+      producer: target('producer', 'fake-a', 'producer-model'),
+    }, { REVIEWER: ['producer'] });
+    const registry = new AdapterRegistry();
+    registry.register(new FakeAdapter('fake-a', ['producer-model']));
+    registry.register(new FakeAdapter('codex', ['gpt-5']));
+    const selector = new ModelSelector(registry, config);
+
+    const selection = await selector.resolveSelection({ platform: 'codex', model: 'gpt-5' }, 'REVIEWER', new Set(), 'producer');
+
+    expect(selection.targetId).toBe('codex_explicit');
+  });
+
+  it('uses an authorized explicit fallback without consulting role rankings', async () => {
+    const config = makeConfig({
+      current: target('current', 'fake-a', 'a-model'),
+      codex_explicit: {
+        targetId: 'codex_explicit',
+        platformId: 'codex',
+        displayName: 'Codex',
+        aliases: ['codex'],
+        reasoning: { strategy: 'highest-supported' },
+        explicitOnly: true,
+        modelBinding: 'EXPLICIT_DISCOVERED',
+      },
+    }, { WORKER: ['current'] });
+    const registry = new AdapterRegistry();
+    registry.register(new FakeAdapter('fake-a', ['a-model']));
+    registry.register(new FakeAdapter('codex', ['gpt-5']));
+    const selector = new ModelSelector(registry, config);
+    const current: ResolvedWorkerSelection = {
+      targetId: 'current', platform: 'fake-a', modelId: 'a-model', reasoningStrategy: 'highest-supported',
+    };
+
+    const selection = await selector.getNextFallback(current, 'WORKER', {
+      failedTargetIds: new Set(['current']),
+      authorizedFallback: { platform: 'codex', model: 'gpt-5' },
+    });
+
+    expect(selection.targetId).toBe('codex_explicit');
+  });
+
+  it('does not select Codex as an automatic fallback without authorization', async () => {
+    const config = makeConfig({
+      current: target('current', 'fake-a', 'a-model'),
+      codex_explicit: {
+        targetId: 'codex_explicit',
+        platformId: 'codex',
+        displayName: 'Codex',
+        reasoning: { strategy: 'highest-supported' },
+        explicitOnly: true,
+        modelBinding: 'EXPLICIT_DISCOVERED',
+      },
+    }, { WORKER: ['current', 'codex_explicit'] });
+    const registry = new AdapterRegistry();
+    registry.register(new FakeAdapter('fake-a', ['a-model']));
+    registry.register(new FakeAdapter('codex', ['gpt-5']));
+    const selector = new ModelSelector(registry, config);
+    const current: ResolvedWorkerSelection = {
+      targetId: 'current', platform: 'fake-a', modelId: 'a-model', reasoningStrategy: 'highest-supported',
+    };
+
+    await expect(selector.getNextFallback(current, 'WORKER', { failedTargetIds: new Set(['current']) })).rejects.toThrow(
+      'No eligible WORKER worker targets are available'
+    );
   });
 });

@@ -6,6 +6,7 @@ import {
   JobIntent,
   ReasoningStrategy,
   SelectionPolicyConfig,
+  ExplicitFallbackSelection,
   WorkerRole,
   WorkerSelection,
   WorkerTargetConfig,
@@ -16,6 +17,14 @@ import {
   TargetAvailabilityStore,
 } from './target-availability-ledger.js';
 import { AdapterRegistry } from '../worker/adapter-registry.js';
+import { WorkerAdapterError } from '../worker/worker-adapter.js';
+
+export interface FallbackResolutionOptions {
+  failedTargetIds: Set<string>;
+  avoidTargetId?: string;
+  now?: Date;
+  authorizedFallback?: ExplicitFallbackSelection;
+}
 
 export interface ResolvedWorkerSelection {
   targetId: string;
@@ -85,6 +94,22 @@ export class ModelSelector {
     const matchesPlatform = (target: WorkerTargetConfig): boolean =>
       !requested.platform || target.platformId.toLowerCase() === requested.platform.toLowerCase();
 
+    const explicitDiscoveredForPlatform = requested.platform
+      ? targets.filter(
+          (target) => target.platformId.toLowerCase() === requested.platform!.toLowerCase() &&
+            target.modelBinding === 'EXPLICIT_DISCOVERED'
+        )
+      : [];
+    if (explicitDiscoveredForPlatform.length > 1) {
+      const matchingDynamic = explicitDiscoveredForPlatform.filter(matchesRequestedModel);
+      if (matchingDynamic.length !== 1) {
+        throw new Error(
+          `MODEL_SELECTION_ERROR: Platform "${requested.platform}" has ambiguous explicitly discovered targets.`
+        );
+      }
+      return matchingDynamic[0];
+    }
+
     const fixedMatch = targets.find(
       (target) => matchesPlatform(target) && target.modelBinding !== 'EXPLICIT_DISCOVERED' && matchesRequestedModel(target)
     );
@@ -96,11 +121,13 @@ export class ModelSelector {
     ) || null;
   }
 
-  private async discoverFor(adapter: ReturnType<AdapterRegistry['get']>): Promise<DiscoveredModel[]> {
+  private async discoverFor(adapter: ReturnType<AdapterRegistry['get']>, explicit = false): Promise<DiscoveredModel[]> {
     if (!adapter) return [];
     try {
       return await adapter.discoverModels();
-    } catch {
+    } catch (error) {
+      if (explicit && error instanceof WorkerAdapterError) throw error;
+      if (explicit) throw new WorkerAdapterError('MODEL_DISCOVERY_UNAVAILABLE', `Model discovery failed: ${String(error)}`);
       return [];
     }
   }
@@ -134,24 +161,26 @@ export class ModelSelector {
       throw new Error(env.error || `MODEL_SELECTION_ERROR: Platform "${target.platformId}" is not installed.`);
     }
 
-    const discovered = await this.discoverFor(adapter);
+    const discovered = await this.discoverFor(adapter, explicit);
     const modelId = target.modelBinding === 'EXPLICIT_DISCOVERED' ? requested?.model?.trim() : target.modelId;
     if (!modelId) {
-      throw new Error(`MODEL_SELECTION_ERROR: Target "${target.targetId}" requires an explicitly discovered model.`);
+      throw new WorkerAdapterError('MODEL_NOT_FOUND', `Target "${target.targetId}" requires an explicitly discovered model.`);
     }
     const discoveredModel = discovered.find((model) => model.id.toLowerCase() === modelId.toLowerCase());
     if (!discoveredModel) {
-      throw new Error(
-        `MODEL_SELECTION_ERROR: Exact model "${modelId}" is not discovered on platform "${target.platformId}".`
-      );
+      throw new WorkerAdapterError('MODEL_NOT_FOUND', `Exact model "${modelId}" is not discovered on platform "${target.platformId}".`);
+    }
+    if (explicit && target.modelBinding === 'EXPLICIT_DISCOVERED' && discoveredModel.selectability !== 'SELECTABLE') {
+      throw new WorkerAdapterError('MODEL_NOT_SELECTABLE', `Exact model "${discoveredModel.id}" is not selectable on platform "${target.platformId}".`);
     }
 
     const requestedReasoning = requested?.reasoning;
     const policyReasoning = target.reasoning || { strategy: 'highest-supported' as const };
     const strategy = requestedReasoning?.strategy || policyReasoning.strategy;
     const explicitValue = requestedReasoning?.value || policyReasoning.value;
+    const effectiveModelId = target.modelBinding === 'EXPLICIT_DISCOVERED' ? discoveredModel.id : modelId;
     const variant = await adapter.resolveReasoningProfile(
-      modelId,
+      effectiveModelId,
       strategy,
       explicitValue
     );
@@ -163,7 +192,7 @@ export class ModelSelector {
     return {
       targetId: target.targetId,
       platform: target.platformId,
-      modelId,
+      modelId: effectiveModelId,
       variant,
       reasoningStrategy: strategy,
       isExplicitOnly: target.explicitOnly,
@@ -244,16 +273,39 @@ export class ModelSelector {
   async getNextFallback(
     current: ResolvedWorkerSelection,
     roleOrIntent: WorkerRole | JobIntent,
+    options: FallbackResolutionOptions
+  ): Promise<ResolvedWorkerSelection>;
+  async getNextFallback(
+    current: ResolvedWorkerSelection,
+    roleOrIntent: WorkerRole | JobIntent,
     excludedOrMode: ExecutionMode | Set<string>,
     failedTargetIds?: Set<string>,
     avoidTargetId?: string,
-    now = new Date()
+    now?: Date
+  ): Promise<ResolvedWorkerSelection>;
+  async getNextFallback(
+    current: ResolvedWorkerSelection,
+    roleOrIntent: WorkerRole | JobIntent,
+    optionsOrMode: FallbackResolutionOptions | ExecutionMode | Set<string>,
+    failedTargetIds?: Set<string>,
+    avoidTargetId?: string,
+    legacyNow = new Date()
   ): Promise<ResolvedWorkerSelection> {
-    const excluded = new Set(
-      failedTargetIds || (excludedOrMode instanceof Set ? excludedOrMode : new Set<string>())
-    );
+    const options: FallbackResolutionOptions = optionsOrMode instanceof Set
+      ? { failedTargetIds: optionsOrMode, avoidTargetId, now: legacyNow }
+      : typeof optionsOrMode === 'object'
+        ? optionsOrMode
+        : { failedTargetIds: failedTargetIds || new Set<string>(), avoidTargetId, now: legacyNow };
+    if (options.authorizedFallback) {
+      const explicit = await this.resolveExplicitSelection(options.authorizedFallback);
+      if (options.failedTargetIds.has(explicit.targetId) || explicit.targetId === current.targetId) {
+        throw new Error(`MODEL_SELECTION_ERROR: Authorized fallback target "${explicit.targetId}" has already failed.`);
+      }
+      return explicit;
+    }
+    const excluded = new Set(options.failedTargetIds);
     excluded.add(current.targetId);
-    return this.resolveSelection(undefined, roleOrIntent, excluded, avoidTargetId, now);
+    return this.resolveSelection(undefined, roleOrIntent, excluded, options.avoidTargetId, options.now || new Date());
   }
 
   canContinueSession(

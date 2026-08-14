@@ -43,4 +43,31 @@ describe('TargetAvailabilityLedger', () => {
     });
     expect(reloaded.get(target.targetId, new Date('2026-08-14T21:00:00.000Z'))?.state).toBe('ELIGIBLE_TO_RETRY');
   });
+
+  it('records effective exact model evidence for a dynamic target by target ID', () => {
+    const ledgerPath = path.join(os.tmpdir(), `availability-dynamic-${Date.now()}-${Math.random()}.json`);
+    paths.push(ledgerPath);
+    const ledger = new TargetAvailabilityLedger(ledgerPath);
+    const target: WorkerTargetConfig = {
+      targetId: 'codex_explicit',
+      platformId: 'codex',
+      displayName: 'Codex',
+      reasoning: { strategy: 'highest-supported' },
+      explicitOnly: true,
+      modelBinding: 'EXPLICIT_DISCOVERED',
+    };
+
+    ledger.recordFailure(
+      target,
+      'QUOTA_EXHAUSTED',
+      '2026-08-14T20:00:00.000Z',
+      '2026-08-14T21:00:00.000Z',
+      'quota exhausted',
+      'worker_result',
+      'gpt-5.6-sol'
+    );
+
+    expect(ledger.get('codex_explicit')?.modelId).toBe('gpt-5.6-sol');
+    expect(ledger.get('codex_explicit')?.targetId).toBe('codex_explicit');
+  });
 });
