@@ -53,6 +53,43 @@ describe('JobSpec Parser & Schema Validation', () => {
     expect(result.spec?.recovery?.enabled).toBe(true);
   });
 
+  it('parses an explicit model selection without reasoning', () => {
+    const result = parseJobSpec(JSON.stringify({
+      ...validJobV2,
+      workerSelection: { platform: 'codex', model: 'gpt-5' },
+    }));
+    expect(result.valid).toBe(true);
+    expect(result.spec?.workerSelection).toEqual({ platform: 'codex', model: 'gpt-5' });
+  });
+
+  it('accepts a bounded nonrecursive fallback selection', () => {
+    const result = parseJobSpec(JSON.stringify({
+      ...validJobV2,
+      workerSelection: {
+        targetId: 'opencode_nemotron_35_lightning',
+        fallbackSelection: { platform: 'codex', model: 'gpt-5' },
+      },
+    }));
+    expect(result.valid).toBe(true);
+    expect(result.spec?.workerSelection?.fallbackSelection).toEqual({ platform: 'codex', model: 'gpt-5' });
+  });
+
+  it('rejects recursive or capability-bearing fallback selection', () => {
+    for (const fallbackSelection of [
+      { platform: 'codex', fallbackSelection: { model: 'gpt-5' } },
+      { platform: 'codex', allowFallback: true },
+      { platform: 42 },
+      {},
+    ]) {
+      const result = parseJobSpec(JSON.stringify({
+        ...validJobV2,
+        workerSelection: { fallbackSelection },
+      }));
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('fallbackSelection');
+    }
+  });
+
   it('rejects unsupported worker roles', () => {
     const result = parseJobSpec(JSON.stringify({ ...validJobV2, role: 'AUTOMATIC_FIXER' }));
     expect(result.valid).toBe(false);

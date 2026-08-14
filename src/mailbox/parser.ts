@@ -16,6 +16,7 @@ const VALID_INTENTS = new Set<JobIntent>(['plan', 'design', 'investigate', 'impl
 const VALID_MODES = new Set<ExecutionMode>(['READ_ONLY', 'WORKTREE_WRITE']);
 const VALID_SESSION_POLICIES = new Set<SessionPolicy>(['CONTINUE', 'FRESH']);
 const VALID_ROLES = new Set<WorkerRole>(['PLANNER', 'INVESTIGATOR', 'WORKER', 'REVIEWER']);
+const VALID_REASONING_STRATEGIES = new Set(['highest-supported', 'explicit']);
 
 export function parseJobSpec(rawContent: string): { valid: boolean; spec?: WorkJob; error?: string } {
   if (!rawContent || typeof rawContent !== 'string') {
@@ -123,6 +124,11 @@ export function parseJobSpec(rawContent: string): { valid: boolean; spec?: WorkJ
     }
   }
 
+  const workerSelection = validateWorkerSelection(parsed.workerSelection);
+  if (!workerSelection.valid) {
+    return { valid: false, error: workerSelection.error };
+  }
+
   const spec: WorkJob = {
     schemaVersion,
     jobId: parsed.jobId,
@@ -133,7 +139,7 @@ export function parseJobSpec(rawContent: string): { valid: boolean; spec?: WorkJ
     round,
     revision: parsed.revision,
     role,
-    workerSelection: parsed.workerSelection,
+    workerSelection: workerSelection.value,
     sessionPolicy,
     recovery: parsed.recovery,
     targetBranch: parsed.targetBranch,
@@ -144,6 +150,56 @@ export function parseJobSpec(rawContent: string): { valid: boolean; spec?: WorkJ
   };
 
   return { valid: true, spec };
+}
+
+function validateWorkerSelection(raw: unknown): { valid: true; value?: WorkJob['workerSelection'] } | { valid: false; error: string } {
+  if (raw === undefined) return { valid: true };
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { valid: false, error: 'Invalid workerSelection: expected an object.' };
+  }
+
+  const selection = raw as Record<string, unknown>;
+  for (const key of ['targetId', 'platform', 'model', 'avoidTargetId']) {
+    if (selection[key] !== undefined && typeof selection[key] !== 'string') {
+      return { valid: false, error: `Invalid workerSelection.${key}: expected a string.` };
+    }
+  }
+  if (selection.reasoning !== undefined && !isValidReasoningConfig(selection.reasoning)) {
+    return { valid: false, error: 'Invalid workerSelection.reasoning.' };
+  }
+  if (selection.fallbackSelection !== undefined) {
+    const fallback = selection.fallbackSelection;
+    if (
+      typeof fallback !== 'object' || fallback === null || Array.isArray(fallback) ||
+      Object.prototype.hasOwnProperty.call(fallback, 'fallbackSelection') ||
+      Object.prototype.hasOwnProperty.call(fallback, 'allowFallback')
+    ) {
+      return { valid: false, error: 'Invalid fallbackSelection: it must be a bounded nonrecursive selection.' };
+    }
+    const fallbackRecord = fallback as Record<string, unknown>;
+    const identifiers = ['targetId', 'platform', 'model'];
+    if (!identifiers.some((key) => typeof fallbackRecord[key] === 'string' && fallbackRecord[key].length > 0)) {
+      return { valid: false, error: 'Invalid fallbackSelection: at least one targetId, platform, or model is required.' };
+    }
+    for (const key of identifiers) {
+      if (fallbackRecord[key] !== undefined && typeof fallbackRecord[key] !== 'string') {
+        return { valid: false, error: `Invalid fallbackSelection.${key}: expected a string.` };
+      }
+    }
+    if (fallbackRecord.reasoning !== undefined && !isValidReasoningConfig(fallbackRecord.reasoning)) {
+      return { valid: false, error: 'Invalid fallbackSelection.reasoning.' };
+    }
+  }
+
+  return { valid: true, value: selection as WorkJob['workerSelection'] };
+}
+
+function isValidReasoningConfig(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false;
+  const reasoning = raw as Record<string, unknown>;
+  if (typeof reasoning.strategy !== 'string' || !VALID_REASONING_STRATEGIES.has(reasoning.strategy)) return false;
+  if (reasoning.value !== undefined && (typeof reasoning.value !== 'string' || !reasoning.value)) return false;
+  return reasoning.strategy !== 'explicit' || typeof reasoning.value === 'string' && reasoning.value.length > 0;
 }
 
 export function formatStatusJson(status: JobStatus): string {

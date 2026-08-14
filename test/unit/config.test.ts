@@ -31,6 +31,77 @@ describe('ConfigManager & validateConfig', () => {
     expect(config.selectionPolicy?.targets.gemini_flash_legacy).toBeUndefined();
   });
 
+  it('keeps Codex explicit-only and outside every automatic ranking', () => {
+    const config = validateConfig(validConfig);
+    const codex = config.selectionPolicy?.targets.codex_explicit;
+
+    expect(codex).toMatchObject({
+      targetId: 'codex_explicit',
+      platformId: 'codex',
+      explicitOnly: true,
+      modelBinding: 'EXPLICIT_DISCOVERED',
+    });
+    expect(codex?.modelId).toBeUndefined();
+    expect(codex?.aliases).toEqual(['codex', 'openai_codex']);
+    expect(config.platforms?.codex).toEqual({ enabled: true, executable: 'codex' });
+    expect(config.selectionPolicy?.roleRankings).toEqual({
+      PLANNER: [
+        'cursor_grok_46_xhigh', 'agy_gemini_flash_37_high', 'opencode_deepseek_v4_flash_max',
+        'opencode_hy3_high', 'opencode_laguna_s_21_high', 'opencode_nemotron_3_ultra',
+        'opencode_nemotron_35_lightning',
+      ],
+      INVESTIGATOR: [
+        'cursor_grok_46_xhigh', 'opencode_nemotron_35_lightning', 'agy_gemini_flash_37_high',
+        'opencode_deepseek_v4_flash_max', 'opencode_hy3_high', 'opencode_laguna_s_21_high',
+        'opencode_nemotron_3_ultra',
+      ],
+      WORKER: [
+        'agy_gemini_flash_37_high', 'cursor_grok_46_medium', 'opencode_nemotron_35_lightning',
+        'opencode_deepseek_v4_flash_max', 'opencode_hy3_high', 'opencode_laguna_s_21_high',
+        'opencode_nemotron_3_ultra',
+      ],
+      REVIEWER: [
+        'opencode_nemotron_35_lightning', 'agy_gemini_flash_37_high', 'cursor_grok_46_xhigh',
+        'opencode_hy3_high', 'opencode_deepseek_v4_flash_max', 'opencode_nemotron_3_ultra',
+        'opencode_laguna_s_21_high',
+      ],
+    });
+  });
+
+  it('rejects fixed targets without a model ID and accepts dynamic targets without one', () => {
+    expect(() => validateConfig({
+      ...validConfig,
+      selectionPolicy: {
+        targets: {
+          fixed_without_model: {
+            targetId: 'fixed_without_model',
+            platformId: 'custom',
+            displayName: 'Fixed Without Model',
+            reasoning: { strategy: 'highest-supported' },
+          },
+        },
+        roleRankings: {},
+      },
+    })).toThrow('modelId');
+
+    const config = validateConfig({
+      ...validConfig,
+      selectionPolicy: {
+        targets: {
+          dynamic_target: {
+            targetId: 'dynamic_target',
+            platformId: 'custom',
+            displayName: 'Dynamic Target',
+            modelBinding: 'EXPLICIT_DISCOVERED',
+            reasoning: { strategy: 'highest-supported' },
+          },
+        },
+        roleRankings: {},
+      },
+    });
+    expect(config.selectionPolicy?.targets.dynamic_target.modelId).toBeUndefined();
+  });
+
   it('preserves role rankings supplied by local policy data', () => {
     const config = validateConfig({
       ...validConfig,

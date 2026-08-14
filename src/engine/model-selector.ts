@@ -79,7 +79,9 @@ export class ModelSelector {
     return (
       targets.find((target) => {
         if (requested.platform && target.platformId.toLowerCase() !== requested.platform.toLowerCase()) return false;
-        const aliases = [target.targetId, target.displayName, target.modelId, ...(target.aliases || [])];
+        const aliases = [target.targetId, target.displayName, target.modelId, ...(target.aliases || [])].filter(
+          (alias): alias is string => typeof alias === 'string'
+        );
         return aliases.some((alias) => this.normalizeAliasString(alias) === normalized);
       }) || null
     );
@@ -124,10 +126,14 @@ export class ModelSelector {
     }
 
     const discovered = await this.discoverFor(adapter);
-    const discoveredModel = discovered.find((model) => model.id.toLowerCase() === target.modelId.toLowerCase());
+    if (!target.modelId) {
+      throw new Error(`MODEL_SELECTION_ERROR: Target "${target.targetId}" requires an explicitly discovered model.`);
+    }
+    const modelId = target.modelId;
+    const discoveredModel = discovered.find((model) => model.id.toLowerCase() === modelId.toLowerCase());
     if (!discoveredModel) {
       throw new Error(
-        `MODEL_SELECTION_ERROR: Exact model "${target.modelId}" is not discovered on platform "${target.platformId}".`
+        `MODEL_SELECTION_ERROR: Exact model "${modelId}" is not discovered on platform "${target.platformId}".`
       );
     }
 
@@ -136,7 +142,7 @@ export class ModelSelector {
     const strategy = requestedReasoning?.strategy || policyReasoning.strategy;
     const explicitValue = requestedReasoning?.value || policyReasoning.value;
     const variant = await adapter.resolveReasoningProfile(
-      target.modelId,
+      modelId,
       strategy,
       explicitValue
     );
@@ -148,7 +154,7 @@ export class ModelSelector {
     return {
       targetId: target.targetId,
       platform: target.platformId,
-      modelId: target.modelId,
+      modelId,
       variant,
       reasoningStrategy: strategy,
       isExplicitOnly: target.explicitOnly,

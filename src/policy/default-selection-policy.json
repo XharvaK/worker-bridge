@@ -56,6 +56,15 @@
       "aliases": ["claude_opus", "Claude Opus", "Opus"],
       "reasoning": { "strategy": "highest-supported" },
       "explicitOnly": true
+    },
+    "codex_explicit": {
+      "targetId": "codex_explicit",
+      "platformId": "codex",
+      "displayName": "Codex (discovered model)",
+      "aliases": ["codex", "openai_codex"],
+      "reasoning": { "strategy": "highest-supported" },
+      "explicitOnly": true,
+      "modelBinding": "EXPLICIT_DISCOVERED"
     }
   },
   "roleRankings": {

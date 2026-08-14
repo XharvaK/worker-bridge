@@ -81,6 +81,12 @@ export function validateConfig(raw: Partial<BridgeConfig>): BridgeConfig {
       defaultModel: 'opencode/deepseek-v4-flash-free',
     };
   }
+  if (!platforms.codex) {
+    platforms.codex = {
+      enabled: true,
+      executable: 'codex',
+    };
+  }
 
   const selectionPolicy = normalizeSelectionPolicy(raw.selectionPolicy);
 
@@ -111,16 +117,27 @@ function normalizeSelectionPolicy(rawPolicy?: SelectionPolicyConfig): SelectionP
     }
 
     const target = candidate as WorkerTargetConfig;
-    if (!target.platformId || !target.modelId || !target.displayName || !target.reasoning?.strategy) {
+    if (!target.platformId || !target.displayName || !target.reasoning?.strategy) {
       throw new Error(`Config validation failed: selection target "${key}" is incomplete.`);
     }
+    if (target.modelBinding !== undefined && !['FIXED', 'EXPLICIT_DISCOVERED'].includes(target.modelBinding)) {
+      throw new Error(`Config validation failed: selection target "${key}" has invalid modelBinding.`);
+    }
+    const modelBinding = target.modelBinding ?? 'FIXED';
+    if (modelBinding === 'FIXED' && (!target.modelId || typeof target.modelId !== 'string')) {
+      throw new Error(`Config validation failed: selection target "${key}" requires modelId for FIXED binding.`);
+    }
+    if (target.modelId !== undefined && (typeof target.modelId !== 'string' || !target.modelId)) {
+      throw new Error(`Config validation failed: selection target "${key}" has invalid modelId.`);
+    }
 
-    const normalizedModelId = normalizeLegacyGeminiReference(target.modelId);
+    const normalizedModelId = target.modelId === undefined ? undefined : normalizeLegacyGeminiReference(target.modelId);
     const normalizedDisplayName = normalizeLegacyGeminiReference(target.displayName);
     targets[key] = {
       ...target,
       targetId: target.targetId || key,
-      modelId: normalizedModelId,
+      modelId: target.modelId === undefined ? undefined : normalizedModelId,
+      modelBinding,
       displayName: normalizedDisplayName,
       aliases: target.aliases ? [...target.aliases] : [],
     };

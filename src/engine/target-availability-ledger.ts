@@ -105,7 +105,7 @@ export class TargetAvailabilityLedger implements TargetAvailabilityStore {
     const record: TargetAvailabilityRecord = {
       targetId: target.targetId,
       platformId: target.platformId,
-      modelId: target.modelId,
+      modelId: target.modelId || '',
       state,
       failureClass,
       observedAt,
@@ -162,7 +162,7 @@ export class InMemoryTargetAvailabilityStore implements TargetAvailabilityStore 
     const record: TargetAvailabilityRecord = {
       targetId: target.targetId,
       platformId: target.platformId,
-      modelId: target.modelId,
+      modelId: target.modelId || '',
       state: retryAt ? 'COOLDOWN' : 'EXHAUSTED',
       failureClass,
       observedAt,

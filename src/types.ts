@@ -44,6 +44,23 @@ export interface ReasoningConfig {
   value?: string;
 }
 
+export type ModelBinding = 'FIXED' | 'EXPLICIT_DISCOVERED';
+export type ModelSelectability = 'SELECTABLE' | 'NOT_SELECTABLE' | 'UNKNOWN';
+export type ReasoningTopology = 'ORDINARY' | 'TOPOLOGY_CHANGING' | 'UNKNOWN';
+
+export interface DiscoveredReasoningProfile {
+  value: string;
+  topology: ReasoningTopology;
+  description?: string;
+}
+
+export interface ExplicitFallbackSelection {
+  targetId?: string;
+  platform?: string;
+  model?: string;
+  reasoning?: ReasoningConfig;
+}
+
 export interface WorkerSelection {
   targetId?: string;
   platform?: string;
@@ -51,6 +68,7 @@ export interface WorkerSelection {
   reasoning?: ReasoningConfig;
   allowFallback?: boolean;
   avoidTargetId?: string;
+  fallbackSelection?: ExplicitFallbackSelection;
 }
 
 export interface RecoveryRequest {
@@ -146,11 +164,12 @@ export interface ModelAliasConfig {
 export interface WorkerTargetConfig {
   targetId: string;
   platformId: string;
-  modelId: string;
+  modelId?: string;
   displayName: string;
   aliases?: string[];
   reasoning: ReasoningConfig;
   explicitOnly?: boolean;
+  modelBinding?: ModelBinding;
 }
 
 export interface SelectionPolicyConfig {
@@ -207,6 +226,7 @@ export interface LedgerJobRecord {
   lastHandledIntent: JobIntent;
   platform?: string;
   model?: string;
+  reasoning?: string;
   targetId?: string;
   role?: WorkerRole;
   platformSessionId?: string | null;
@@ -234,6 +254,8 @@ export interface DiscoveredModel {
   family?: string;
   variants: string[];
   highestVariant?: string;
+  reasoningProfiles?: DiscoveredReasoningProfile[];
+  selectability?: ModelSelectability;
   contextLimit?: number;
   isExplicitOnly?: boolean;
 }
@@ -264,6 +286,10 @@ export type OperationalFailureClass =
   | 'AUTH_REQUIRED'
   | 'MODEL_NOT_FOUND'
   | 'MODEL_UNAVAILABLE'
+  | 'MODEL_DISCOVERY_UNAVAILABLE'
+  | 'MODEL_NOT_SELECTABLE'
+  | 'REASONING_PROFILE_UNSUPPORTED'
+  | 'SESSION_ID_UNAVAILABLE'
   | 'QUOTA_EXHAUSTED'
   | 'RATE_LIMITED'
   | 'PERMISSION_BLOCKED'
@@ -291,6 +317,17 @@ export interface WorkerRoundResult {
   requestPrompt?: string;
   evidence?: WorkerEvidence;
   rawStderr?: string;
+  sessionIdentity?: WorkerSessionIdentity;
+}
+
+export interface WorkerSessionIdentity {
+  targetId?: string;
+  platform: string;
+  model: string;
+  reasoning?: string;
+  sessionId?: string;
+  worktreeCwd: string;
+  executionMode: ExecutionMode;
 }
 
 export interface WorkerEvidence {
