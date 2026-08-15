@@ -48,8 +48,29 @@
       "supported_in_api": true,
       "supported_reasoning_levels": [
         {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning",
+          "topology": "ordinary"
+        },
+        {
+          "effort": "medium",
+          "description": "Balances speed and reasoning depth for everyday tasks",
+          "topology": "ordinary"
+        },
+        {
           "effort": "high",
-          "description": "Reasoning metadata without a known topology marker."
+          "description": "Greater reasoning depth for complex problems",
+          "topology": "ordinary"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extra high reasoning depth for complex problems",
+          "topology": "ordinary"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth for the hardest problems",
+          "topology": "ordinary"
         }
       ]
     },
@@ -78,6 +99,18 @@
       "display_name": "Codex Unknown Selectability",
       "visibility": "preview",
       "supported_reasoning_levels": []
+    },
+    {
+      "slug": "codex-unknown-topology",
+      "display_name": "Codex Unknown Topology",
+      "visibility": "list",
+      "supported_in_api": true,
+      "supported_reasoning_levels": [
+        {
+          "effort": "high",
+          "description": "Reasoning metadata without a known topology marker."
+        }
+      ]
     }
   ]
 }

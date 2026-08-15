@@ -72,9 +72,12 @@ export class ModelSelector {
     return this.availability.isEligible(targetId, now);
   }
 
-  private resolveRole(roleOrIntent: WorkerRole | JobIntent): WorkerRole {
-    if (['PLANNER', 'INVESTIGATOR', 'WORKER', 'REVIEWER'].includes(roleOrIntent)) {
+  private resolveRole(roleOrIntent: WorkerRole | JobIntent | string): WorkerRole {
+    if (roleOrIntent === 'INVESTIGATOR' || roleOrIntent === 'WORKER' || roleOrIntent === 'REVIEWER') {
       return roleOrIntent as WorkerRole;
+    }
+    if (roleOrIntent === 'PLANNER') {
+      throw new Error('INVALID_ROLE: Role "PLANNER" is not a selectable Worker Bridge role. Expected INVESTIGATOR, WORKER, or REVIEWER.');
     }
     return roleForJob(roleOrIntent as JobIntent);
   }
@@ -211,7 +214,7 @@ export class ModelSelector {
       ? excludedPlatforms
       : new Set(excludedPlatforms ? (Array.isArray(excludedPlatforms) ? excludedPlatforms : [excludedPlatforms]) : []);
 
-    if (requested.platform && excludedPlats.has(requested.platform.toLowerCase())) {
+    if (requested.platform && (requested.platform.toLowerCase() === 'cursor-agent' || excludedPlats.has(requested.platform.toLowerCase()))) {
       throw new WorkerAdapterError(
         'RECURSION_BLOCKED',
         `Platform "${requested.platform}" is excluded in this execution context (recursion blocked).`
@@ -225,7 +228,7 @@ export class ModelSelector {
       );
     }
 
-    if (excludedPlats.has(target.platformId.toLowerCase())) {
+    if (target.platformId.toLowerCase() === 'cursor-agent' || excludedPlats.has(target.platformId.toLowerCase())) {
       throw new WorkerAdapterError(
         'RECURSION_BLOCKED',
         `Platform "${target.platformId}" for target "${target.targetId}" is excluded in this execution context (recursion blocked).`
@@ -237,7 +240,7 @@ export class ModelSelector {
 
   async resolveSelection(
     requested?: WorkerSelection,
-    roleOrIntent: WorkerRole | JobIntent = 'PLANNER',
+    roleOrIntent: WorkerRole | JobIntent = 'INVESTIGATOR',
     excludedTargetIds: Set<string> | ExecutionMode = new Set(),
     avoidTargetId?: string,
     now = new Date(),

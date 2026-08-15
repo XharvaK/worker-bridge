@@ -15,7 +15,7 @@ const VALID_V1_PHASES = new Set(['PLAN', 'IMPLEMENT', 'CANCEL']);
 const VALID_INTENTS = new Set<JobIntent>(['plan', 'design', 'investigate', 'implement', 'fix', 'review', 'audit']);
 const VALID_MODES = new Set<ExecutionMode>(['READ_ONLY', 'WORKTREE_WRITE']);
 const VALID_SESSION_POLICIES = new Set<SessionPolicy>(['CONTINUE', 'FRESH']);
-const VALID_ROLES = new Set<WorkerRole>(['PLANNER', 'INVESTIGATOR', 'WORKER', 'REVIEWER']);
+const VALID_ROLES = new Set<WorkerRole>(['INVESTIGATOR', 'WORKER', 'REVIEWER']);
 const VALID_REASONING_STRATEGIES = new Set(['highest-supported', 'explicit']);
 
 export function parseJobSpec(rawContent: string): { valid: boolean; spec?: WorkJob; error?: string } {
@@ -99,7 +99,7 @@ export function parseJobSpec(rawContent: string): { valid: boolean; spec?: WorkJ
 
   if (parsed.role !== undefined) {
     if (typeof parsed.role !== 'string' || !VALID_ROLES.has(parsed.role as WorkerRole)) {
-      return { valid: false, error: `Invalid role: "${parsed.role}". Expected PLANNER, INVESTIGATOR, WORKER, or REVIEWER.` };
+      return { valid: false, error: `Invalid role: "${parsed.role}". Expected INVESTIGATOR, WORKER, or REVIEWER.` };
     }
     role = parsed.role as WorkerRole;
   }

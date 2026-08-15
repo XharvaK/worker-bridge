@@ -66,6 +66,7 @@ describe('CodexAdapter fixture-backed CLI contract', () => {
       'codex-auto-review',
       'codex-api-disabled',
       'codex-unknown-selectability',
+      'codex-unknown-topology',
     ]);
     expect(models.find((model) => model.id === 'gpt-5.6-sol')).toMatchObject({
       selectability: 'SELECTABLE',

@@ -1,28 +1,51 @@
 # Worker Bridge (`worker-bridge`)
 
-A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGPT / Architect & Adversarial Reviewer) to multi-platform headless AI workers (**Google Antigravity**, **OpenCode**, and explicit-only **Codex CLI**) via a private GitHub mailbox repository.
+A lightweight, secure, local development bridge connecting **Doc** and **Cursor Agent (Grok 4.6)** (northbound planner/orchestrator) to multi-platform headless AI workers across four CLI provider families:
+1. **OpenAI Codex CLI** (`codex`): `luna-max` (`gpt-5.6-luna`, Priority #1 for WORKER) and explicit-only discovered models (`codex_explicit`)
+2. **Google Antigravity CLI** (`agy`): `gemini-3.7-flash-high` (Gemini Flash 3.7 High)
+3. **Cursor CLI** (`cursor-cli`): `cursor-grok-4.6-xhigh`, `cursor-grok-4.6-medium`
+4. **OpenCode CLI** (`opencode`): `nemotron-3.5-lightning`, `deepseek-v4-flash-max`, `hy3-high`, `laguna-s-2.1-high`, `nemotron-3-ultra`
 
 ---
 
-## Core Architecture & Law
+## Core Architecture & Authority Boundaries
 
 ```
-                   DOC + SOL
-                      |
-                      v
-                WORKER BRIDGE
-                 /          \
-                /            \
-      AntigravityAdapter    OpenCodeAdapter       CodexAdapter
-             |                    |              (explicit-only)
-             v                    v                    v
-            AGY                OpenCode CLI        Codex CLI
-             |                    |                    |
-             v                    v                    v
-       selected model        selected model       exact selected model
+                           DOC (Human Owner)
+                                  |
+                                  v
+                      Cursor Agent / Grok 4.6
+                    (Northbound Orchestrator)
+                                  |
+                                  | MCP (JSON-RPC)
+                                  v
+                            WORKER BRIDGE
+           /                /             \               \
+          v                v               v               v
+    CodexAdapter      AgyAdapter     CursorAdapter   OpenCodeAdapter
+          |                |               |               |
+          v                v               v               v
+      Codex CLI         AGY CLI        Cursor CLI     OpenCode CLI
 ```
 
-1. **Workflow Ownership**: The workflow belongs to Doc (the human operator). Sol is an AI assistant / architectural reviewer. AI outputs and assistant recommendations do not constitute owner authorization.
+### Selection Capability vs. Current Cursor MCP Execution Capability
+
+Worker Bridge maintains a strict separation between **selection policy** (which model/platform is ranked highest when execution is authorized) and **execution authority** (which execution modes are permitted over a specific interface):
+
+- **Selection Primaries (Active Policy)**:
+  - `INVESTIGATOR` Primary: `Cursor CLI / Grok 4.6 XHigh` (`cursor-grok-4.6-xhigh`)
+  - `WORKER` Primary: `Codex CLI / Luna Max` (`gpt-5.6-luna`, reasoning: `max`)
+  - `REVIEWER` Primary: `OpenCode CLI / Nemotron 3.5 Lightning` (`opencode/nemotron-3.5-lightning-free`)
+
+- **Current Cursor MCP Execution Capability**:
+  - `READ_ONLY` (`plan`, `design`, `investigate`, `review`, `audit`): **Fully available and executable over MCP**. Runs safely in isolated plan worktrees with mechanical read-only modes.
+  - `WORKTREE_WRITE` (`implement`, `fix`): **Blocked fail-closed over MCP with `OWNER_AUTHORITY_UNAVAILABLE`**. The WORKER ranking is active selection policy, but source-writing delegation from Cursor MCP remains unavailable until Worker Bridge has authenticated owner authority.
+
+---
+
+## Core Principles & Law
+
+1. **Workflow Ownership**: The workflow belongs to Doc (the human operator). Cursor Agent (running Grok 4.6) is the northbound planner and orchestrator. AI outputs and assistant recommendations do not constitute owner authorization.
 2. **Core Invariants**:
    - `WORKER PLATFORM != WORKFLOW`
    - `MODEL != AUTHORITY`
@@ -31,17 +54,24 @@ A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGP
    - `GITHUB MAILBOX != AUTHORITY`
    - `LOCAL BRIDGE CONFIG OWNS LOCAL EXECUTION AUTHORITY`
    - `READ-ONLY DISPATCH != WRITE AUTHORITY`
-3. **Authority Model**:
-   - **MCP v1 (Cursor Agent)**: Strictly `READ_ONLY` (`plan`, `design`, `investigate`, `review`, `audit`). `WORKTREE_WRITE` is failed closed with `OWNER_AUTHORITY_UNAVAILABLE` to eliminate unauthenticated same-user write escalation.
-   - **Non-MCP Operator-Controlled Write Path**: `WORKTREE_WRITE` (`implement`, `fix`) is performed through direct operator CLI execution (`worker-bridge run-once`) or the local mailbox daemon (`worker-bridge start`), guarded by local configuration, path containment, and branch isolation.
-4. **Highest Reasoning Default**:
-   - AGY and OpenCode use their existing highest supported profiles unless explicitly overridden. An explicit Codex model with omitted reasoning resolves to the highest discovered ordinary native profile. Unknown topology fails closed.
-5. **Opus Policy**:
+3. **No Internal Planner Role**: Worker Bridge target execution roles are strictly:
+   - `INVESTIGATOR` (intents: `plan`, `design`, `investigate`)
+   - `WORKER` (intents: `implement`, `fix`)
+   - `REVIEWER` (intents: `review`, `audit`)
+4. **Surface Separation & Lineage Recursion Protection**:
+   - `cursor-agent` = northbound orchestrator surface (injected by trusted MCP server boundary; cannot be selected as a downstream worker).
+   - `cursor-cli` = downstream worker execution surface (`platformId: 'cursor-cli'`).
+   - Lineage markers (`WORKER_BRIDGE_PARENT_JOB_ID`, `WORKER_BRIDGE_EXECUTION_DEPTH`, `WORKER_BRIDGE_EXECUTION_CONTEXT`) are injected into all spawned child processes to fail closed against nested MCP re-entry.
+5. **Highest Reasoning Default**:
+   - Discovered models default to their highest supported ordinary reasoning profile unless explicitly overridden.
+6. **Opus Policy**:
    - Claude Opus (`claude-opus-4-6-thinking`) is strictly **`EXPLICIT_ONLY`** to preserve quota. Excluded from all automatic rankings and fallbacks.
-6. **Authoritative Bridge Verification**:
-   - `IMPLEMENTATION_READY` is granted exclusively on bridge-observed test execution and diff checks. Model prose is never accepted as verification evidence.
-7. **Codex Policy**:
-   - Codex is **explicit-only**. It is absent from automatic rankings, automatic fallback, cooldown reranking, and reviewer diversification. Catalog validity does not prove authentication, runtime availability, account access, or quota.
+7. **Authoritative Bridge Verification**:
+   - `IMPLEMENTATION_READY` is granted exclusively on bridge-observed test execution and clean diff checks. Model prose is never accepted as verification evidence.
+8. **Codex Policy**:
+   - Codex supports exact semantic targets (`codex_luna_max` in WORKER, `gpt-5.6-luna` with explicit `max` reasoning) and explicit-only discovered targets (`codex_explicit` with `modelBinding: EXPLICIT_DISCOVERED`).
+   - Discovery uses only `codex debug models --bundled` for the bundled read-only catalog. Hidden or non-selectable models fail closed with `MODEL_NOT_SELECTABLE`.
+   - Execution uses `--ignore-user-config`. Project `.codex/config.toml` is authority-checked and capability-expanding configs are rejected as `PERMISSION_BLOCKED`.
 
 ---
 
@@ -50,45 +80,58 @@ A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGP
 ### 1. Antigravity (`agy`)
 - CLI: Official `agy.exe` (`1.1.13+`)
 - Execution: `-p <prompt> --model <model> --effort high --mode <plan|accept-edits> --sandbox --add-dir <cwd>`
-- Models: `gemini-3.7-flash-high`, `gemini-3.6-flash-high`, `gemini-3.1-pro-high`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking` (explicit only).
+- Models: `gemini-3.7-flash-high` (Gemini Flash 3.7 High), `gemini-3.6-flash-high`, `gemini-3.1-pro-high`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking` (explicit only).
 
 ### 2. OpenCode (`opencode`)
 - CLI: Official OpenCode CLI (`1.18.15+`)
 - Execution: `opencode run "<prompt>" --dir "<cwd>" -m "<provider/model>" --variant "<variant>" --format json --auto`
-- Models: `opencode/deepseek-v4-flash-free` (variant: `max`), `opencode/hy3-free` (variant: `high`), `opencode/laguna-s-2.1-free` (variant: `high`), `opencode/nemotron-3.5-lightning-free`, `opencode/nemotron-3-ultra-free`, `mistral/*`.
+- Models: `opencode/nemotron-3.5-lightning-free`, `opencode/deepseek-v4-flash-free` (variant: `max`), `opencode/hy3-free` (variant: `high`), `opencode/laguna-s-2.1-free` (variant: `high`), `opencode/nemotron-3-ultra-free`.
 
-### 3. Codex CLI (`codex`) — explicit-only
-- Target: policy alias `codex_explicit` with `modelBinding: EXPLICIT_DISCOVERED`; no current Codex model ID is hardcoded in policy.
-- Explicit request: provide the Codex platform and the exact catalog model ID, for example:
-  ```json
-  { "targetId": "codex_explicit", "platform": "codex", "model": "<exact-discovered-model>" }
-  ```
-  A raw model ID without an explicit Codex platform, target, or alias does not trigger Codex discovery.
-- Discovery: the adapter uses only `codex debug models --bundled` for the bundled read-only catalog. Exact catalog membership and user selectability are separate from authentication, runtime availability, and quota. Hidden or non-selectable models fail closed with `MODEL_NOT_SELECTABLE`.
-- Reasoning: omitted reasoning selects the highest discovered `ORDINARY` native profile. An explicit profile must be discovered with known topology. Topology-changing reasoning requires an explicit request and authority-envelope proof; the adapter fails closed when that proof is unavailable.
-- Execution and resume: worker execution and exact-session resume use `--ignore-user-config`. The bridge binds the model, native reasoning, worktree/cwd, sandbox, and approval mode. Resume is allowed only with an exact session ID and matching platform, model, reasoning, worktree, execution mode, and authority context. `resume --last` and session-ID inference from prose are not used.
-- Configuration: bounded project `.codex/config.toml` authority inspection rejects unknown, unparsable, or capability-expanding configuration as `PERMISSION_BLOCKED`. The bridge does not copy, edit, or persist Codex credentials or configuration.
-- Fallback: Codex can run only through an explicit, bounded `fallbackSelection`. No automatic fallback can select it. After `WORKTREE_WRITE` source effects, all fallback stops and the existing Recovery Capsule/recovery authorization path remains authoritative.
+### 3. Cursor CLI (`cursor-cli`)
+- CLI: Official Cursor Agent CLI (`2026.08.11+`)
+- Execution: `cursor-agent -p --output-format text --workspace <cwd> --model <model> [--mode ask]`
+- Models: `cursor-grok-4.6-xhigh`, `cursor-grok-4.6-medium`, `cursor-grok-4.6-high`. Native direct execution via bundled binary without `cmd.exe` or `shell=true`.
+
+### 4. Codex CLI (`codex`) — explicit-only & Luna Max
+- Targets:
+  - `codex_luna_max`: ranked #1 in `WORKER` role policy (`gpt-5.6-luna` with explicit `max` effort).
+  - `codex_explicit`: explicit-only dynamic target with `modelBinding: EXPLICIT_DISCOVERED`. Absent from automatic rankings, automatic fallback, cooldown reranking, and reviewer diversification.
+- Discovery: the adapter uses only `codex debug models --bundled` for the bundled read-only catalog. Hidden or non-selectable models fail closed with `MODEL_NOT_SELECTABLE`.
+- Reasoning: omitted reasoning selects the highest discovered `ORDINARY` native profile. An explicit profile must be discovered with known topology.
+- Execution and resume: worker execution and exact-session resume use `--ignore-user-config`. The bridge binds the model, native reasoning, worktree/cwd, sandbox, and approval mode.
+- Configuration: bounded project `.codex/config.toml` authority inspection rejects unknown, unparsable, or capability-expanding configuration as `PERMISSION_BLOCKED`.
 
 ---
 
-## Rankings
+## Locked Final Rankings
 
-### Locked Planner Ranking (Read-Only: plan / investigate / review)
-1. `Gemini Flash 3.7 High` (`antigravity`)
-2. `DeepSeek V4 Flash Max` (`opencode`)
-3. `HY3 High` (`opencode`)
-4. `Laguna S 2.1 High` (`opencode`)
-5. `Nemotron 3 Ultra` (`opencode`)
-6. `Nemotron 3.5 Lightning` (`opencode`)
+### INVESTIGATOR (Read-Only: plan / design / investigate)
+1. `Cursor CLI — Grok 4.6 XHigh` (`cursor_grok_46_xhigh` -> `cursor-grok-4.6-xhigh`)
+2. `OpenCode CLI — Nemotron 3.5 Lightning` (`opencode_nemotron_35_lightning`)
+3. `OpenCode CLI — DeepSeek V4 Flash Max` (`opencode_deepseek_v4_flash_max`)
+4. `Antigravity CLI — Gemini Flash 3.7 High` (`agy_gemini_flash_37_high`)
+5. `OpenCode CLI — HY3 High` (`opencode_hy3_high`)
+6. `OpenCode CLI — Laguna S 2.1 High` (`opencode_laguna_s_21_high`)
+7. `OpenCode CLI — Nemotron 3 Ultra` (`opencode_nemotron_3_ultra`)
 
-### Locked Worker Ranking (Source-Writing: implement / fix)
-1. `Gemini Flash 3.7 High` (`antigravity`)
-2. `Nemotron 3.5 Lightning` (`opencode`)
-3. `DeepSeek V4 Flash Max` (`opencode`)
-4. `HY3 High` (`opencode`)
-5. `Laguna S 2.1 High` (`opencode`)
-6. `Nemotron 3 Ultra` (`opencode`)
+### WORKER (Source-Writing: implement / fix)
+1. `Codex CLI — Luna Max` (`codex_luna_max` -> `gpt-5.6-luna` / `max`)
+2. `Antigravity CLI — Gemini Flash 3.7 High` (`agy_gemini_flash_37_high`)
+3. `Cursor CLI — Grok 4.6 Medium` (`cursor_grok_46_medium` -> `cursor-grok-4.6-medium`)
+4. `OpenCode CLI — Nemotron 3.5 Lightning` (`opencode_nemotron_35_lightning`)
+5. `OpenCode CLI — DeepSeek V4 Flash Max` (`opencode_deepseek_v4_flash_max`)
+6. `OpenCode CLI — HY3 High` (`opencode_hy3_high`)
+7. `OpenCode CLI — Laguna S 2.1 High` (`opencode_laguna_s_21_high`)
+8. `OpenCode CLI — Nemotron 3 Ultra` (`opencode_nemotron_3_ultra`)
+
+### REVIEWER (Read-Only: review / audit)
+1. `OpenCode CLI — Nemotron 3.5 Lightning` (`opencode_nemotron_35_lightning`)
+2. `Cursor CLI — Grok 4.6 XHigh` (`cursor_grok_46_xhigh` -> `cursor-grok-4.6-xhigh`)
+3. `Antigravity CLI — Gemini Flash 3.7 High` (`agy_gemini_flash_37_high`)
+4. `OpenCode CLI — HY3 High` (`opencode_hy3_high`)
+5. `OpenCode CLI — DeepSeek V4 Flash Max` (`opencode_deepseek_v4_flash_max`)
+6. `OpenCode CLI — Nemotron 3 Ultra` (`opencode_nemotron_3_ultra`)
+7. `OpenCode CLI — Laguna S 2.1 High` (`opencode_laguna_s_21_high`)
 
 ---
 
@@ -115,8 +158,8 @@ A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGP
    }
    ```
 
-3. **Authority Boundaries in MCP v1**:
-   - `READ_ONLY` tasks (`plan`, `investigate`, `audit`, `review`) execute immediately.
+3. **Authority Boundaries in MCP v2**:
+   - `READ_ONLY` tasks (`plan`, `design`, `investigate`, `audit`, `review`) execute immediately in isolated worktrees.
    - `WORKTREE_WRITE` tasks (`implement`, `fix`) fail closed with `OWNER_AUTHORITY_UNAVAILABLE`. Use Mode B for write operations.
 
 ### Mode B: Continuous GitHub Mailbox Daemon (Owner-Authorized Write Mode)

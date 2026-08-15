@@ -13,6 +13,7 @@ import { AdapterRegistry } from '../worker/adapter-registry.js';
 import { AntigravityAdapter } from '../worker/agy-adapter.js';
 import { OpenCodeAdapter } from '../worker/opencode-adapter.js';
 import { CodexAdapter } from '../worker/codex-adapter.js';
+import { CursorAdapter } from '../worker/cursor-adapter.js';
 import { WorkerAdapterError } from '../worker/worker-adapter.js';
 import { ModelSelector, ResolvedWorkerSelection } from './model-selector.js';
 import { TargetAvailabilityLedger } from './target-availability-ledger.js';
@@ -77,10 +78,13 @@ export class Orchestrator {
       const opencodeExe = cfg.platforms?.opencode?.executable || 'opencode';
       const opencodeModel = cfg.platforms?.opencode?.defaultModel || 'opencode/deepseek-v4-flash-free';
       const codexExe = cfg.platforms?.codex?.executable || 'codex';
+      const cursorExe = cfg.platforms?.['cursor-cli']?.executable || cfg.platforms?.cursor?.executable || 'cursor';
+      const cursorModel = cfg.platforms?.['cursor-cli']?.defaultModel || cfg.platforms?.cursor?.defaultModel || 'grok-4.6';
 
       this.adapterRegistry.register(new AntigravityAdapter(agyExe, agyModel, this.processManager));
       this.adapterRegistry.register(new OpenCodeAdapter(opencodeExe, opencodeModel, this.processManager));
       this.adapterRegistry.register(new CodexAdapter(codexExe, this.processManager));
+      this.adapterRegistry.register(new CursorAdapter(cursorExe, cursorModel, this.processManager));
     }
 
     this.modelSelector = new ModelSelector(this.adapterRegistry, cfg, this.availability);

@@ -102,9 +102,16 @@ export class ProcessManager {
       // ambient shell. Node quotes the remaining argument array for CreateProcess.
       const invocation = getSafeProcessInvocation(options.executable, options.args);
 
+      const currentDepth = Number(process.env.WORKER_BRIDGE_EXECUTION_DEPTH || 0);
+      const lineageEnv: Record<string, string> = {
+        WORKER_BRIDGE_PARENT_JOB_ID: jobId,
+        WORKER_BRIDGE_EXECUTION_DEPTH: (currentDepth + 1).toString(),
+        WORKER_BRIDGE_EXECUTION_CONTEXT: 'worker-child',
+      };
+
       const child = spawn(invocation.executable, invocation.args, {
         cwd: options.cwd,
-        env: { ...process.env, ...options.env },
+        env: { ...process.env, ...lineageEnv, ...options.env },
         windowsHide: true,
         shell: false,
       });

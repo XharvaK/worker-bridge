@@ -1,6 +1,6 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ExecutionMode, JobIntent, JobState, ReasoningConfig } from '../types.js';
+import { ExecutionMode, JobIntent, JobState, ReasoningConfig, WorkerRole } from '../types.js';
 
 export type IpcMethod =
   | 'list_targets'
@@ -99,6 +99,9 @@ export interface StartJobParams {
   timeoutSeconds?: number;
   baseSha?: string;
   excludedPlatforms?: string[];
+  originSurface?: string;
+  role?: WorkerRole;
+  orchestrator?: { surface?: string; role?: string; modelHint?: string };
 }
 
 export interface StartJobResult {

@@ -257,6 +257,16 @@ export class Ledger {
         record.state === 'IMPLEMENTING' ||
         record.state === 'WORKER_RUNNING'
       ) {
+        if (record.role === 'PLANNER') {
+          logger.warn(
+            `Failing closed in-flight job ${record.jobId} with unsupported legacy PLANNER role.`
+          );
+          record.state = 'FAILED';
+          record.finishedAt = new Date().toISOString();
+          record.lastKnownPid = null;
+          recovered.push(record);
+          continue;
+        }
         const isAlive = record.lastKnownPid ? isPidAliveFn(record.lastKnownPid) : false;
         if (!isAlive) {
           logger.warn(

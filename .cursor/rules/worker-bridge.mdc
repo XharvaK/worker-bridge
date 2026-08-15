@@ -1,41 +1,61 @@
 ---
-description: Rules for Cursor Agent when invoking Worker Bridge MCP workers
+description: Rules for Cursor Agent (Grok 4.6) when orchestrating tasks via Worker Bridge MCP
 globs: *
-alwaysApply: false
+alwaysApply: true
 ---
 
 # Cursor Agent Guide for Worker Bridge
 
-Worker Bridge provides platform-agnostic, headless worker execution across Antigravity (Gemini 3.7 Flash High), OpenCode, and OpenAI Codex CLI.
+Cursor Agent (running Grok 4.6) acts as the northbound planner and orchestrator. Worker Bridge provides headless downstream worker delegation across four CLI provider families:
+1. **Codex CLI**: `luna-max` (`gpt-5.6-luna`, Priority #1 for WORKER)
+2. **Antigravity CLI**: `gemini-3.7-flash-high` (Gemini Flash 3.7 High)
+3. **Cursor CLI**: `cursor-grok-4.6-xhigh` (Investigator #1), `cursor-grok-4.6-medium` (Worker #3)
+4. **OpenCode CLI**: `nemotron-3.5-lightning` (Reviewer #1), `deepseek-v4-flash-max`, `hy3-high`, `laguna-s-2.1-high`, `nemotron-3-ultra`
 
-## Architectural Invariants
+## Core Orchestration Rules
 
-1. **Recursion is Blocked**: Cursor Agent is the northbound orchestrator. Never attempt to select `cursor` as a Worker Bridge target.
-2. **Explicit Authority Model**:
-   - `READ_ONLY` (`plan`, `investigate`, `audit`, `review`): Supported over MCP v1. Executes safely in isolated plan worktrees.
-   - `WORKTREE_WRITE` (`implement`, `fix`): **Blocked in MCP v1** (`OWNER_AUTHORITY_UNAVAILABLE`). Write tasks must be submitted through Doc's GitHub mailbox workflow.
-3. **Durable Execution**: Worker Bridge jobs run in a persistent local background service (`worker-bridge serve`). If your Cursor session disconnects or restarts, running jobs continue unaffected in the service. Use `worker_bridge_get_job` to re-attach.
+1. **Northbound Planner Identity**: Cursor Agent (Grok 4.6) is the sole planner and orchestrator. Worker Bridge does **not** have an internal `PLANNER` role. Target execution roles are strictly:
+   - `INVESTIGATOR` (intents: `plan`, `design`, `investigate`)
+   - `WORKER` (intents: `implement`, `fix`)
+   - `REVIEWER` (intents: `review`, `audit`)
+2. **Autonomous Delegation**: Delegate automatically when a downstream worker materially helps with investigation, deep code inspection, or specialized review. Do not ask Doc/the user to manually relay prompts or tool outputs.
+3. **Default Worker Count & Intentional Secondary**:
+   - Normally delegate to **one** primary worker.
+   - For ambiguous, high-impact, or high-risk tasks, intentionally start a second independent worker or reviewer (e.g. across different provider families) to cross-verify facts.
+4. **Critical Synthesis**: Retrieve full results via `worker_bridge_get_result` and critically synthesize findings. Never blindly echo raw worker responses without verification.
+5. **Execution Surfaces & Recursion Safety**:
+   - `cursor-agent` is the northbound orchestrator surface. It cannot be recursively invoked.
+   - `cursor-cli` is a legitimate downstream worker execution surface (`platformId: 'cursor-cli'`).
+   - Lineage markers prevent nested re-entry from inside downstream worker processes.
+6. **Authority Model & Current Capabilities**:
+   - `READ_ONLY` (`plan`, `design`, `investigate`, `audit`, `review`): Fully supported over MCP. Executes safely in isolated plan worktrees with mechanical read-only mode and working tree clean verification.
+   - `WORKTREE_WRITE` (`implement`, `fix`): **Fails closed over MCP with `OWNER_AUTHORITY_UNAVAILABLE`**. The WORKER ranking (with Codex Luna Max as priority #1) is active selection policy, but source-writing delegation from Cursor MCP remains unavailable until Worker Bridge has an authenticated owner-authority mechanism.
+   - **Do NOT repeatedly attempt `WORKTREE_WRITE` jobs over MCP** that are known to fail with `OWNER_AUTHORITY_UNAVAILABLE`.
+   - **Implementation Workflow Today**:
+     1. Use Worker Bridge `INVESTIGATOR` or `REVIEWER` (`READ_ONLY`) for deep analysis, planning, or codebase exploration.
+     2. Perform required source code edits directly using Cursor's own native file editing capabilities.
+     3. Delegate to Worker Bridge `REVIEWER` (`READ_ONLY`) afterward to independently verify changes and test suites.
 
-## Standard Workflow
+## Standard MCP Workflow
 
-### 1. Discover Available Targets
-Call `worker_bridge_list_targets` to view configured models, platform bindings, and availability states.
+### 1. List Available Targets
+Call `worker_bridge_list_targets` to view configured models, platform bindings, and real-time availability states.
 
-### 2. Prepare Dynamic Projects
-Before starting a job on a new project:
-Call `worker_bridge_prepare_project` with either:
-- `projectPath`: validates that the repository is inside the trusted root (`C:\Users\Xharv\Projects`).
-- `remote` + `destinationName`: clones a remote repository under the trusted root.
+### 2. Prepare Project
+Call `worker_bridge_prepare_project` with:
+- `projectPath`: canonical path under trusted root (`C:\Users\Xharv\Projects`).
 
 ### 3. Start a Job
 Call `worker_bridge_start_job` with:
-- `clientRequestId`: unique idempotency key.
+- `clientRequestId`: unique idempotency key (e.g. `req-<uuid>`).
 - `projectPath`: canonical path under trusted root.
 - `intent`: `'plan' | 'investigate' | 'review' | 'audit'`.
 - `executionMode`: `'READ_ONLY'`.
-- `goal`: clear prompt specifying requirements.
+- `goal`: clear prompt detailing technical requirements and constraints.
+- `role`: (optional) `'INVESTIGATOR' | 'WORKER' | 'REVIEWER'`.
+- `modelHint`: (optional informational hint, e.g. `'grok-4.6'`).
 
-### 4. Monitor & Retrieve Results
-- Check status using `worker_bridge_get_job(jobId)`.
-- When `state === 'WORKER_RETURNED'`, fetch full output via `worker_bridge_get_result(jobId)` (paginated in chunks up to 64 KB).
-- Review diff stats, verification outcomes, and changed files before presenting results to the user.
+### 4. Monitor & Synthesize
+- Check progress using `worker_bridge_get_job(jobId)`.
+- When `state === 'WORKER_RETURNED'`, retrieve complete output using `worker_bridge_get_result(jobId)`.
+- Synthesize the technical findings into your response to Doc.

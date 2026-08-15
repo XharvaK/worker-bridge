@@ -10,7 +10,8 @@ import {
   StartJobParams,
   StartJobResult,
 } from './ipc-protocol.js';
-import { ExecutionMode, JobIntent, JobState, WorkerSelection } from '../types.js';
+import { ExecutionMode, JobIntent, JobState, LegacyWorkerRole, OrchestratorInfo, WorkerRole, WorkerSelection } from '../types.js';
+import { roleForJob } from '../engine/job-role.js';
 
 export interface StoredJobRecord {
   jobId: string;
@@ -26,6 +27,9 @@ export interface StoredJobRecord {
   timeoutSeconds?: number;
   baseSha?: string;
   excludedPlatforms?: string[];
+  originSurface?: string;
+  role?: LegacyWorkerRole | string;
+  orchestrator?: OrchestratorInfo;
   state: JobState;
   requiresOwnerApproval: boolean;
   approvalChallenge?: string;
@@ -88,7 +92,10 @@ export class JobManager {
           if (nonterminalStates.includes(job.state)) {
             mutated = true;
             job.completedAt = new Date().toISOString();
-            if (job.sourceEffectsPresent) {
+            if (job.role === 'PLANNER') {
+              job.state = 'FAILED';
+              job.error = 'UNSUPPORTED_LEGACY_ROLE: In-flight jobs with legacy PLANNER role fail closed in v2.';
+            } else if (job.sourceEffectsPresent) {
               job.state = 'INTERRUPTED_WITH_SOURCE_STATE';
               job.recoveryStatus = 'RECOVERY_REQUIRED';
               job.error = 'INTERRUPTED_WITH_SOURCE_STATE: Service restarted while write job was in flight; partial source effects preserved.';
@@ -204,6 +211,18 @@ export class JobManager {
         }
       : undefined;
 
+    if ((params.role as any) === 'PLANNER') {
+      throw new Error('INVALID_ROLE: Role "PLANNER" is not a selectable Worker Bridge role. Expected INVESTIGATOR, WORKER, or REVIEWER.');
+    }
+
+    const requestedPlat = params.workerSelection?.platform?.toLowerCase();
+    const requestedTarget = params.workerSelection?.targetId?.toLowerCase();
+    if (requestedPlat === 'cursor-agent' || requestedTarget === 'cursor-agent') {
+      throw new Error('RECURSION_BLOCKED: Platform "cursor-agent" is not a valid downstream worker target.');
+    }
+
+    const effectiveRole = roleForJob(intent, params.role);
+
     const record: StoredJobRecord = {
       jobId,
       clientRequestId,
@@ -218,6 +237,9 @@ export class JobManager {
       timeoutSeconds: params.timeoutSeconds,
       baseSha: params.baseSha,
       excludedPlatforms: params.excludedPlatforms,
+      originSurface: params.originSurface,
+      role: effectiveRole,
+      orchestrator: params.orchestrator,
       state,
       requiresOwnerApproval,
       approvalChallenge,

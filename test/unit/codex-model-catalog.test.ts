@@ -183,12 +183,16 @@ describe('Codex model catalog parsing', () => {
 
   it('fails closed for unknown or unsupported reasoning topology', () => {
     const catalog = parseCodexModelCatalog(fixture);
+    const unknownModel = catalog.models.find((model) => model.id === 'codex-unknown-topology');
     const luna = catalog.models.find((model) => model.id === 'gpt-5.6-luna');
     const sol = catalog.models.find((model) => model.id === 'gpt-5.6-sol');
 
-    expect(() => resolveCodexReasoningProfile(luna!, 'highest-supported')).toThrow('REASONING_PROFILE_UNSUPPORTED');
-    expect(() => resolveCodexReasoningProfile(luna!, 'explicit', 'high')).toThrow('REASONING_PROFILE_UNSUPPORTED');
+    expect(() => resolveCodexReasoningProfile(unknownModel!, 'highest-supported')).toThrow('REASONING_PROFILE_UNSUPPORTED');
+    expect(() => resolveCodexReasoningProfile(unknownModel!, 'explicit', 'high')).toThrow('REASONING_PROFILE_UNSUPPORTED');
     expect(() => resolveCodexReasoningProfile(sol!, 'explicit', 'not-real')).toThrow('REASONING_PROFILE_UNSUPPORTED');
+
+    // Luna with max effort resolves successfully
+    expect(resolveCodexReasoningProfile(luna!, 'explicit', 'max').value).toBe('max');
   });
 
   it('selects the highest ordinal regardless of array order', () => {

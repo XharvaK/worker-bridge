@@ -15,6 +15,10 @@ class MockIpcClient extends IpcClient {
       return { targets: [{ targetId: 'mock_target', platformId: 'antigravity', available: true }] } as TResult;
     }
     if (method === 'start_job') {
+      const p = params as any;
+      if (p?.executionMode === 'WORKTREE_WRITE') {
+        throw new Error('OWNER_AUTHORITY_UNAVAILABLE: WORKTREE_WRITE execution mode is not supported over MCP in v1. MCP is strictly READ_ONLY (plan, investigate, audit, review). Use the GitHub mailbox bridge for owner-authorized WORKTREE_WRITE tasks.');
+      }
       return { jobId: 'job-123', state: 'PENDING', executionMode: 'READ_ONLY', requiresOwnerApproval: false } as TResult;
     }
     if (method === 'get_job') {
@@ -109,7 +113,7 @@ describe('McpServer JSON-RPC stdio protocol', () => {
     expect(res.result.content[0].text).toContain('mock_target');
   });
 
-  it('dispatches worker_bridge_start_job with excludedPlatforms: [cursor]', async () => {
+  it('dispatches worker_bridge_start_job with excludedPlatforms: [cursor-agent] and trusted originSurface', async () => {
     const res = await sendRpc({
       jsonrpc: '2.0',
       id: 4,
@@ -122,19 +126,89 @@ describe('McpServer JSON-RPC stdio protocol', () => {
           intent: 'plan',
           executionMode: 'READ_ONLY',
           goal: 'Plan feature',
+          originSurface: 'spoofed-cli', // Malicious spoof attempt
         },
       },
     });
 
     expect(mockClient.calls[0].method).toBe('start_job');
-    expect((mockClient.calls[0].params as any).excludedPlatforms).toEqual(['cursor']);
+    const startParams = mockClient.calls[0].params as any;
+    expect(startParams.excludedPlatforms).toEqual(['cursor-agent']);
+    expect(startParams.originSurface).toBe('cursor-agent');
+    expect(startParams.orchestrator).toEqual({
+      surface: 'cursor-agent',
+      role: 'orchestrator',
+      modelHint: undefined,
+    });
     expect(res.result.content[0].text).toContain('job-123');
+  });
+
+  it('fails WORKTREE_WRITE closed with OWNER_AUTHORITY_UNAVAILABLE and prevents downstream execution', async () => {
+    const res = await sendRpc({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: {
+        name: 'worker_bridge_start_job',
+        arguments: {
+          clientRequestId: 'mcp-req-write-001',
+          projectPath: 'C:\\Projects\\repo',
+          intent: 'implement',
+          role: 'WORKER',
+          executionMode: 'WORKTREE_WRITE',
+          goal: 'Attempted write without owner authority',
+        },
+      },
+    });
+
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain('OWNER_AUTHORITY_UNAVAILABLE');
+    // Verify no job was launched or returned
+    expect(res.result.content[0].text).not.toContain('"state":"PENDING"');
+  });
+
+  it('fails closed when start_job is invoked from a child worker process with lineage marker', async () => {
+    const originalParent = process.env.WORKER_BRIDGE_PARENT_JOB_ID;
+    const originalDepth = process.env.WORKER_BRIDGE_EXECUTION_DEPTH;
+    try {
+      process.env.WORKER_BRIDGE_PARENT_JOB_ID = 'job-parent-999';
+      process.env.WORKER_BRIDGE_EXECUTION_DEPTH = '1';
+      const res = await sendRpc({
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'tools/call',
+        params: {
+          name: 'worker_bridge_start_job',
+          arguments: {
+            clientRequestId: 'nested-req',
+            projectPath: 'C:\\Projects\\repo',
+            intent: 'plan',
+            executionMode: 'READ_ONLY',
+            goal: 'Nested worker attempt',
+          },
+        },
+      });
+
+      expect(res.result.isError).toBe(true);
+      expect(res.result.content[0].text).toContain('RECURSION_BLOCKED: Nested Worker Bridge execution is blocked');
+    } finally {
+      if (originalParent !== undefined) {
+        process.env.WORKER_BRIDGE_PARENT_JOB_ID = originalParent;
+      } else {
+        delete process.env.WORKER_BRIDGE_PARENT_JOB_ID;
+      }
+      if (originalDepth !== undefined) {
+        process.env.WORKER_BRIDGE_EXECUTION_DEPTH = originalDepth;
+      } else {
+        delete process.env.WORKER_BRIDGE_EXECUTION_DEPTH;
+      }
+    }
   });
 
   it('handles invalid tool names with formatted error', async () => {
     const res = await sendRpc({
       jsonrpc: '2.0',
-      id: 5,
+      id: 7,
       method: 'tools/call',
       params: {
         name: 'invalid_tool',

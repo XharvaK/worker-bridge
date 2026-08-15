@@ -121,4 +121,68 @@ describe('Ledger (Persistent Idempotency & Crash Recovery)', () => {
     });
     expect(new Ledger(tmpLedgerPath).getJobRecord('job-native-reasoning')?.reasoning).toBe('max');
   });
+
+  it('keeps completed historical PLANNER records readable for audit', () => {
+    const ledger = new Ledger(tmpLedgerPath);
+    ledger.recordStart(
+      'job-legacy-planner-audit',
+      'ashley',
+      'READ_ONLY',
+      'plan',
+      1,
+      1,
+      null,
+      'antigravity',
+      'gemini-3.7-flash-high',
+      'C:\\workers\\job-legacy-planner-audit',
+      null,
+      null,
+      'agy_gemini_flash_37_high',
+      'PLANNER',
+      false,
+      null,
+      'abcdef1234567890',
+      'high'
+    );
+    ledger.recordFinish('job-legacy-planner-audit', 'PLAN_READY');
+
+    const reloaded = new Ledger(tmpLedgerPath);
+    const record = reloaded.getJobRecord('job-legacy-planner-audit');
+    expect(record).not.toBeNull();
+    expect(record?.role).toBe('PLANNER');
+    expect(record?.state).toBe('PLAN_READY');
+  });
+
+  it('fails closed when an in-flight nonterminal PLANNER record is encountered on startup reconciliation', () => {
+    const ledger = new Ledger(tmpLedgerPath);
+    ledger.recordStart(
+      'job-in-flight-legacy-planner',
+      'ashley',
+      'READ_ONLY',
+      'plan',
+      1,
+      1,
+      null,
+      'antigravity',
+      'gemini-3.7-flash-high',
+      'C:\\workers\\job-in-flight-legacy-planner',
+      null,
+      null,
+      'agy_gemini_flash_37_high',
+      'PLANNER',
+      false,
+      null,
+      'abcdef1234567890',
+      'high'
+    );
+
+    // Reconcile on startup: in-flight PLANNER job must fail closed to FAILED, not converted to INVESTIGATOR
+    const isPidAlive = (_pid: number) => false;
+    const recovered = ledger.recoverInterruptedJobs(isPidAlive);
+
+    expect(recovered.length).toBe(1);
+    expect(recovered[0].jobId).toBe('job-in-flight-legacy-planner');
+    expect(recovered[0].state).toBe('FAILED');
+    expect(recovered[0].role).toBe('PLANNER');
+  });
 });

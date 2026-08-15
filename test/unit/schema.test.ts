@@ -96,6 +96,12 @@ describe('JobSpec Parser & Schema Validation', () => {
     expect(result.error).toContain('role');
   });
 
+  it('rejects legacy PLANNER role on new jobs', () => {
+    const result = parseJobSpec(JSON.stringify({ ...validJobV2, role: 'PLANNER' }));
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('Invalid role: "PLANNER". Expected INVESTIGATOR, WORKER, or REVIEWER.');
+  });
+
   it('rejects unsupported schema version', () => {
     const result = parseJobSpec(JSON.stringify({ ...validJobV1, schemaVersion: 99 }));
     expect(result.valid).toBe(false);

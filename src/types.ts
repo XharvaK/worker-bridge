@@ -36,7 +36,19 @@ export type JobState =
 
 export type SessionPolicy = 'CONTINUE' | 'FRESH';
 
-export type WorkerRole = 'PLANNER' | 'INVESTIGATOR' | 'WORKER' | 'REVIEWER';
+export type WorkerRole = 'INVESTIGATOR' | 'WORKER' | 'REVIEWER';
+export type LegacyWorkerRole = WorkerRole | 'PLANNER';
+
+export interface OrchestratorInfo {
+  surface?: string;
+  role?: string;
+  modelHint?: string;
+}
+
+export interface TrustedRequestContext {
+  originSurface?: string;
+  lineageParentJobId?: string;
+}
 
 export type ReasoningStrategy = 'highest-supported' | 'explicit';
 
@@ -232,7 +244,7 @@ export interface LedgerJobRecord {
   model?: string;
   reasoning?: string;
   targetId?: string;
-  role?: WorkerRole;
+  role?: LegacyWorkerRole | string;
   platformSessionId?: string | null;
   state: JobState;
   startedAt: string;

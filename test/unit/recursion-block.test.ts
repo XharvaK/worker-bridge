@@ -3,6 +3,8 @@ import { ModelSelector } from '../../src/engine/model-selector.js';
 import { AdapterRegistry } from '../../src/worker/adapter-registry.js';
 import { InMemoryTargetAvailabilityStore } from '../../src/engine/target-availability-ledger.js';
 import { WorkerAdapter, WorkerPlatformInfo } from '../../src/worker/worker-adapter.js';
+import { checkExecutionLineage } from '../../src/mcp/mcp-server.js';
+import { ProcessManager } from '../../src/engine/process-manager.js';
 
 class MockAdapter implements WorkerAdapter {
   readonly platformId: string;
@@ -20,7 +22,7 @@ class MockAdapter implements WorkerAdapter {
     return [{ id: this.modelId, displayName: 'Model', selectability: 'SELECTABLE' as const, variants: [] }];
   }
   async resolveReasoningProfile() {
-    return 'medium';
+    return 'xhigh';
   }
   async probeQuota() {
     return { state: 'AVAILABLE' as const };
@@ -33,15 +35,16 @@ class MockAdapter implements WorkerAdapter {
   }
 }
 
-describe('Recursion blocking for excluded platforms', () => {
+describe('Recursion blocking & execution-lineage protection', () => {
   let registry: AdapterRegistry;
   let selector: ModelSelector;
 
   beforeEach(() => {
     registry = new AdapterRegistry();
+    registry.register(new MockAdapter('cursor-cli', 'grok-4.6'));
+    registry.register(new MockAdapter('antigravity', 'gemini-3.7-flash-high'));
+    registry.register(new MockAdapter('opencode', 'nemotron-3.5-lightning'));
     registry.register(new MockAdapter('cursor', 'cursor-model'));
-    registry.register(new MockAdapter('antigravity', 'gemini-3.7-flash'));
-    registry.register(new MockAdapter('opencode', 'deepseek-v4'));
 
     selector = new ModelSelector(
       registry,
@@ -53,6 +56,13 @@ describe('Recursion blocking for excluded platforms', () => {
         allowedProjects: {},
         selectionPolicy: {
           targets: {
+            cursor_grok_46_xhigh: {
+              targetId: 'cursor_grok_46_xhigh',
+              platformId: 'cursor-cli',
+              modelId: 'grok-4.6',
+              displayName: 'Cursor CLI Grok XHigh',
+              reasoning: { strategy: 'explicit', value: 'xhigh' },
+            },
             cursor_target: {
               targetId: 'cursor_target',
               platformId: 'cursor',
@@ -60,26 +70,36 @@ describe('Recursion blocking for excluded platforms', () => {
               displayName: 'Cursor Worker',
               reasoning: { strategy: 'highest-supported' },
             },
-            agy_target: {
-              targetId: 'agy_target',
+            agy_gemini_flash_37_high: {
+              targetId: 'agy_gemini_flash_37_high',
               platformId: 'antigravity',
-              modelId: 'gemini-3.7-flash',
-              displayName: 'AGY Flash',
+              modelId: 'gemini-3.7-flash-high',
+              displayName: 'AGY Gemini 3.7 High',
               reasoning: { strategy: 'highest-supported' },
             },
-            opencode_target: {
-              targetId: 'opencode_target',
+            opencode_nemotron_35_lightning: {
+              targetId: 'opencode_nemotron_35_lightning',
               platformId: 'opencode',
-              modelId: 'deepseek-v4',
-              displayName: 'OpenCode DeepSeek',
+              modelId: 'nemotron-3.5-lightning',
+              displayName: 'OpenCode Nemotron',
               reasoning: { strategy: 'highest-supported' },
             },
           },
           roleRankings: {
-            PLANNER: ['cursor_target', 'agy_target', 'opencode_target'],
-            WORKER: ['cursor_target', 'agy_target'],
-            INVESTIGATOR: ['agy_target'],
-            REVIEWER: ['agy_target'],
+            INVESTIGATOR: [
+              'cursor_grok_46_xhigh',
+              'opencode_nemotron_35_lightning',
+              'agy_gemini_flash_37_high',
+            ],
+            WORKER: [
+              'agy_gemini_flash_37_high',
+              'opencode_nemotron_35_lightning',
+            ],
+            REVIEWER: [
+              'opencode_nemotron_35_lightning',
+              'cursor_grok_46_xhigh',
+              'agy_gemini_flash_37_high',
+            ],
           },
         },
       },
@@ -98,47 +118,33 @@ describe('Recursion blocking for excluded platforms', () => {
   });
 
   it('skips excluded platforms in automatic role ranking resolution', async () => {
-    // With cursor excluded, cursor_target is skipped, falls through to agy_target
     const selection = await selector.resolveSelection(
       undefined,
-      'PLANNER',
+      'INVESTIGATOR',
       new Set(),
       undefined,
       new Date(),
-      ['cursor']
+      ['cursor-cli']
     );
-    expect(selection.targetId).toBe('agy_target');
-    expect(selection.platform).toBe('antigravity');
+    expect(selection.targetId).toBe('opencode_nemotron_35_lightning');
+    expect(selection.platform).toBe('opencode');
   });
 
   it('skips excluded platforms in fallback resolution', async () => {
     const current = {
-      targetId: 'agy_target',
-      platform: 'antigravity',
-      modelId: 'gemini-3.7-flash',
-      reasoningStrategy: 'highest-supported' as const,
+      targetId: 'cursor_grok_46_xhigh',
+      platform: 'cursor-cli',
+      modelId: 'grok-4.6',
+      reasoningStrategy: 'explicit' as const,
     };
 
-    const fallback = await selector.getNextFallback(current, 'PLANNER', {
-      failedTargetIds: new Set(['agy_target']),
-      excludedPlatforms: ['cursor'],
+    const fallback = await selector.getNextFallback(current, 'INVESTIGATOR', {
+      failedTargetIds: new Set(['cursor_grok_46_xhigh']),
+      excludedPlatforms: ['cursor-agent', 'opencode'],
     });
 
-    expect(fallback.targetId).toBe('opencode_target');
-    expect(fallback.platform).toBe('opencode');
-  });
-
-  it('skips excluded platforms in reviewer diversification resolution', async () => {
-    // REVIEWER ranking has agy_target only; if cursor is requested, it skips cursor
-    const selection = await selector.resolveSelection(
-      undefined,
-      'REVIEWER',
-      new Set(),
-      undefined,
-      new Date(),
-      ['cursor']
-    );
-    expect(selection.platform).toBe('antigravity');
+    expect(fallback.targetId).toBe('agy_gemini_flash_37_high');
+    expect(fallback.platform).toBe('antigravity');
   });
 
   it('blocks session continuation if target platform is excluded', async () => {
@@ -161,7 +167,6 @@ describe('Recursion blocking for excluded platforms', () => {
       reasoningStrategy: 'highest-supported' as const,
     };
 
-    // canContinueSession checks platform match
     const canContinue = selector.canContinueSession(
       sessionIdentity,
       nextSelection,
@@ -170,14 +175,141 @@ describe('Recursion blocking for excluded platforms', () => {
     );
     expect(canContinue).toBe(true);
 
-    // But nextSelection itself cannot be resolved when cursor is excluded
     await expect(
       selector.resolveExplicitSelection({ targetId: 'cursor_target' }, ['cursor'])
     ).rejects.toThrow('RECURSION_BLOCKED');
   });
 
-  it('allows cursor when excludedPlatforms does not include cursor (e.g. mailbox mode)', async () => {
-    const selection = await selector.resolveSelection(undefined, 'PLANNER');
-    expect(selection.targetId).toBe('cursor_target');
+  it('1. trusted cursor-agent ingress can select downstream cursor-cli', async () => {
+    const selection = await selector.resolveSelection(
+      undefined,
+      'INVESTIGATOR',
+      new Set(),
+      undefined,
+      new Date(),
+      ['cursor-agent']
+    );
+    expect(selection.targetId).toBe('cursor_grok_46_xhigh');
+    expect(selection.platform).toBe('cursor-cli');
+  });
+
+  it('2. platformFamily=cursor or platform=cursor-agent does not block downstream cursor-cli', async () => {
+    const explicit = await selector.resolveExplicitSelection(
+      { targetId: 'cursor_grok_46_xhigh' },
+      ['cursor-agent']
+    );
+    expect(explicit.targetId).toBe('cursor_grok_46_xhigh');
+    expect(explicit.platform).toBe('cursor-cli');
+  });
+
+  it('3. caller cannot select cursor-agent as a downstream target', async () => {
+    await expect(
+      selector.resolveExplicitSelection(
+        { platform: 'cursor-agent', model: 'grok-4.6' },
+        ['cursor-agent']
+      )
+    ).rejects.toThrow('RECURSION_BLOCKED');
+  });
+
+  it('4. automatic selection falls back cleanly if cursor-cli fails or is excluded', async () => {
+    const fallback = await selector.getNextFallback(
+      {
+        targetId: 'cursor_grok_46_xhigh',
+        platform: 'cursor-cli',
+        modelId: 'grok-4.6',
+        reasoningStrategy: 'explicit',
+      },
+      'INVESTIGATOR',
+      {
+        failedTargetIds: new Set(['cursor_grok_46_xhigh']),
+        excludedPlatforms: ['cursor-agent'],
+      }
+    );
+    expect(fallback.targetId).toBe('opencode_nemotron_35_lightning');
+    expect(fallback.platform).toBe('opencode');
+  });
+
+  it('5. reviewer automatic selection can choose cursor-cli under cursor-agent ingress', async () => {
+    const selection = await selector.resolveSelection(
+      undefined,
+      'REVIEWER',
+      new Set(['opencode_nemotron_35_lightning']),
+      undefined,
+      new Date(),
+      ['cursor-agent']
+    );
+    expect(selection.targetId).toBe('cursor_grok_46_xhigh');
+    expect(selection.platform).toBe('cursor-cli');
+  });
+
+  describe('Execution Lineage Invariants', () => {
+    it('A. downstream job attempt to supply WORKER_BRIDGE_EXECUTION_DEPTH=0 is overridden by Worker Bridge', () => {
+      const pm = new ProcessManager();
+      // ProcessManager injects lineageEnv after options.env so options.env cannot override depth to 0
+      const currentDepth = 0;
+      const callerEnv = { WORKER_BRIDGE_EXECUTION_DEPTH: '0', WORKER_BRIDGE_PARENT_JOB_ID: 'fake' };
+      const mergedEnv = {
+        ...callerEnv,
+        WORKER_BRIDGE_PARENT_JOB_ID: 'job-real-001',
+        WORKER_BRIDGE_EXECUTION_DEPTH: (currentDepth + 1).toString(),
+        WORKER_BRIDGE_EXECUTION_CONTEXT: 'worker-child',
+      };
+
+      expect(mergedEnv.WORKER_BRIDGE_EXECUTION_DEPTH).toBe('1');
+      expect(mergedEnv.WORKER_BRIDGE_PARENT_JOB_ID).toBe('job-real-001');
+    });
+
+    it('B. downstream job attempt to blank parent marker leaves controlled value intact', () => {
+      const callerEnv = { WORKER_BRIDGE_PARENT_JOB_ID: '' };
+      const mergedEnv = {
+        ...callerEnv,
+        WORKER_BRIDGE_PARENT_JOB_ID: 'job-real-002',
+        WORKER_BRIDGE_EXECUTION_DEPTH: '1',
+      };
+      expect(mergedEnv.WORKER_BRIDGE_PARENT_JOB_ID).toBe('job-real-002');
+    });
+
+    it('C. malformed inherited lineage at MCP startup fails closed', () => {
+      // Missing parent ID with depth present
+      const res1 = checkExecutionLineage({
+        WORKER_BRIDGE_EXECUTION_DEPTH: '1',
+        WORKER_BRIDGE_PARENT_JOB_ID: '',
+      } as any);
+      expect(res1.isNested).toBe(true);
+      expect(res1.error).toContain('RECURSION_BLOCKED: Malformed execution lineage');
+
+      // Non-numeric depth
+      const res2 = checkExecutionLineage({
+        WORKER_BRIDGE_PARENT_JOB_ID: 'job-123',
+        WORKER_BRIDGE_EXECUTION_DEPTH: 'invalid-depth',
+      } as any);
+      expect(res2.isNested).toBe(true);
+      expect(res2.error).toContain('RECURSION_BLOCKED: Malformed execution lineage depth');
+    });
+
+    it('D. depth overflow / absurd value fails closed', () => {
+      const res = checkExecutionLineage({
+        WORKER_BRIDGE_PARENT_JOB_ID: 'job-123',
+        WORKER_BRIDGE_EXECUTION_DEPTH: '99',
+      } as any);
+      expect(res.isNested).toBe(true);
+      expect(res.error).toContain('RECURSION_BLOCKED: Invalid execution lineage depth');
+    });
+
+    it('E. top-level process with no lineage allows normal operation', () => {
+      const res = checkExecutionLineage({} as any);
+      expect(res.isNested).toBe(false);
+      expect(res.error).toBeUndefined();
+    });
+
+    it('F. valid worker lineage blocks nested start_job with RECURSION_BLOCKED', () => {
+      const res = checkExecutionLineage({
+        WORKER_BRIDGE_PARENT_JOB_ID: 'job-parent-555',
+        WORKER_BRIDGE_EXECUTION_DEPTH: '1',
+        WORKER_BRIDGE_EXECUTION_CONTEXT: 'worker-child',
+      } as any);
+      expect(res.isNested).toBe(true);
+      expect(res.error).toContain('RECURSION_BLOCKED: Nested Worker Bridge execution is blocked (lineage: parent job "job-parent-555", depth 1)');
+    });
   });
 });

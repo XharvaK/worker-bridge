@@ -26,12 +26,12 @@ describe('ConfigManager & validateConfig', () => {
     const config = validateConfig(validConfig);
     expect(config.workerModel).toBe('flash');
     expect(config.pushWorkerBranches).toBe(true);
-    expect(config.selectionPolicy?.roleRankings.PLANNER?.[1]).toBe('agy_gemini_flash_37_high');
+    expect(config.selectionPolicy?.roleRankings.INVESTIGATOR?.[0]).toBe('cursor_grok_46_xhigh');
     expect(config.selectionPolicy?.targets.agy_gemini_flash_37_high.modelId).toBe('gemini-3.7-flash-high');
     expect(config.selectionPolicy?.targets.gemini_flash_legacy).toBeUndefined();
   });
 
-  it('keeps Codex explicit-only and outside every automatic ranking', () => {
+  it('keeps Codex explicit-only target outside automatic ranking while ranking codex_luna_max in WORKER', () => {
     const config = validateConfig(validConfig);
     const codex = config.selectionPolicy?.targets.codex_explicit;
 
@@ -45,24 +45,32 @@ describe('ConfigManager & validateConfig', () => {
     expect(codex?.aliases).toEqual(['codex', 'openai_codex']);
     expect(config.platforms?.codex).toEqual({ enabled: true, executable: 'codex' });
     expect(config.selectionPolicy?.roleRankings).toEqual({
-      PLANNER: [
-        'cursor_grok_46_xhigh', 'agy_gemini_flash_37_high', 'opencode_deepseek_v4_flash_max',
-        'opencode_hy3_high', 'opencode_laguna_s_21_high', 'opencode_nemotron_3_ultra',
-        'opencode_nemotron_35_lightning',
-      ],
       INVESTIGATOR: [
-        'cursor_grok_46_xhigh', 'opencode_nemotron_35_lightning', 'agy_gemini_flash_37_high',
-        'opencode_deepseek_v4_flash_max', 'opencode_hy3_high', 'opencode_laguna_s_21_high',
+        'cursor_grok_46_xhigh',
+        'opencode_nemotron_35_lightning',
+        'opencode_deepseek_v4_flash_max',
+        'agy_gemini_flash_37_high',
+        'opencode_hy3_high',
+        'opencode_laguna_s_21_high',
         'opencode_nemotron_3_ultra',
       ],
       WORKER: [
-        'agy_gemini_flash_37_high', 'cursor_grok_46_medium', 'opencode_nemotron_35_lightning',
-        'opencode_deepseek_v4_flash_max', 'opencode_hy3_high', 'opencode_laguna_s_21_high',
+        'codex_luna_max',
+        'agy_gemini_flash_37_high',
+        'cursor_grok_46_medium',
+        'opencode_nemotron_35_lightning',
+        'opencode_deepseek_v4_flash_max',
+        'opencode_hy3_high',
+        'opencode_laguna_s_21_high',
         'opencode_nemotron_3_ultra',
       ],
       REVIEWER: [
-        'opencode_nemotron_35_lightning', 'agy_gemini_flash_37_high', 'cursor_grok_46_xhigh',
-        'opencode_hy3_high', 'opencode_deepseek_v4_flash_max', 'opencode_nemotron_3_ultra',
+        'opencode_nemotron_35_lightning',
+        'cursor_grok_46_xhigh',
+        'agy_gemini_flash_37_high',
+        'opencode_hy3_high',
+        'opencode_deepseek_v4_flash_max',
+        'opencode_nemotron_3_ultra',
         'opencode_laguna_s_21_high',
       ],
     });
@@ -128,7 +136,6 @@ describe('ConfigManager & validateConfig', () => {
           },
         },
         roleRankings: {
-          PLANNER: ['custom_target'],
           INVESTIGATOR: ['custom_target'],
           WORKER: ['custom_target'],
           REVIEWER: ['custom_target'],
@@ -136,13 +143,13 @@ describe('ConfigManager & validateConfig', () => {
       },
     });
 
-    expect(config.selectionPolicy?.roleRankings.PLANNER).toEqual(['custom_target']);
+    expect(config.selectionPolicy?.roleRankings.INVESTIGATOR).toEqual(['custom_target']);
     expect(config.selectionPolicy?.targets.custom_target.platformId).toBe('custom');
   });
 
-  it('maps intents to the four configured worker roles', () => {
-    expect(roleForJob('plan')).toBe('PLANNER');
-    expect(roleForJob('design')).toBe('PLANNER');
+  it('maps intents to the three active worker roles', () => {
+    expect(roleForJob('plan')).toBe('INVESTIGATOR');
+    expect(roleForJob('design')).toBe('INVESTIGATOR');
     expect(roleForJob('investigate')).toBe('INVESTIGATOR');
     expect(roleForJob('implement')).toBe('WORKER');
     expect(roleForJob('fix')).toBe('WORKER');

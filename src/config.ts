@@ -87,6 +87,13 @@ export function validateConfig(raw: Partial<BridgeConfig>): BridgeConfig {
       executable: 'codex',
     };
   }
+  if (!platforms['cursor-cli'] && !platforms.cursor) {
+    platforms['cursor-cli'] = {
+      enabled: true,
+      executable: 'cursor',
+      defaultModel: 'grok-4.6',
+    };
+  }
 
   const selectionPolicy = normalizeSelectionPolicy(raw.selectionPolicy);
 
