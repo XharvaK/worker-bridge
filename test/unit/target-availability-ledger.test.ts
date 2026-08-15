@@ -41,7 +41,15 @@ describe('TargetAvailabilityLedger', () => {
       retryAt: '2026-08-14T21:00:00.000Z',
       rawEvidence: 'quota exhausted; retry-after: 3600',
     });
-    expect(reloaded.get(target.targetId, new Date('2026-08-14T21:00:00.000Z'))?.state).toBe('ELIGIBLE_TO_RETRY');
+
+    // get() does not mutate state
+    expect(reloaded.get(target.targetId, new Date('2026-08-14T21:00:00.000Z'))?.state).toBe('COOLDOWN');
+    // isEligible() dynamically computes eligibility
+    expect(reloaded.isEligible(target.targetId, new Date('2026-08-14T21:00:00.000Z'))).toBe(true);
+
+    // refreshEligibility() explicitly transitions state
+    reloaded.refreshEligibility(new Date('2026-08-14T21:00:00.000Z'));
+    expect(reloaded.get(target.targetId)?.state).toBe('ELIGIBLE_TO_RETRY');
   });
 
   it('records effective exact model evidence for a dynamic target by target ID', () => {

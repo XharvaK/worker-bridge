@@ -132,10 +132,19 @@ function parseReasoningProfiles(value: unknown): DiscoveredReasoningProfile[] {
   });
 }
 
+export const KNOWN_EFFORT_ORDINALS: Record<string, number> = {
+  low: 1,
+  medium: 2,
+  high: 3,
+  max: 4,
+};
+
 export function parseCodexModelCatalog(raw: unknown): CodexCatalogParseResult {
   if (!isRecord(raw) || !Array.isArray(raw.models)) {
     throw new WorkerAdapterError('MODEL_DISCOVERY_UNAVAILABLE', 'Invalid Codex catalog: models array is required.');
   }
+
+  const seenIds = new Set<string>();
 
   return {
     source: 'bundled',
@@ -144,8 +153,17 @@ export function parseCodexModelCatalog(raw: unknown): CodexCatalogParseResult {
         throw new WorkerAdapterError('MODEL_DISCOVERY_UNAVAILABLE', `Invalid Codex catalog: models[${index}] must be an object.`);
       }
 
+      const id = requireString(model.slug, `models[${index}].slug`);
+      if (seenIds.has(id)) {
+        throw new WorkerAdapterError(
+          'MODEL_DISCOVERY_UNAVAILABLE',
+          `Codex catalog contains ambiguous duplicate model ID: ${id}`
+        );
+      }
+      seenIds.add(id);
+
       return {
-        id: requireString(model.slug, `models[${index}].slug`),
+        id,
         displayName: requireString(model.display_name, `models[${index}].display_name`),
         variants: [],
         reasoningProfiles: parseReasoningProfiles(model.supported_reasoning_levels),
@@ -179,19 +197,37 @@ export function resolveCodexReasoningProfile(
     return profile;
   }
 
-  for (let index = profiles.length - 1; index >= 0; index -= 1) {
-    const profile = profiles[index];
-    if (profile.topology === 'UNKNOWN') {
-      throw new WorkerAdapterError(
-        'REASONING_PROFILE_UNSUPPORTED',
-        `Codex reasoning topology is unknown for model ${model.id}.`
-      );
-    }
-    if (profile.topology === 'ORDINARY') return profile;
+  if (profiles.some((p) => p.topology === 'UNKNOWN')) {
+    throw new WorkerAdapterError(
+      'REASONING_PROFILE_UNSUPPORTED',
+      `Codex reasoning topology is unknown for model ${model.id}.`
+    );
   }
 
-  throw new WorkerAdapterError(
-    'REASONING_PROFILE_UNSUPPORTED',
-    `Codex model has no supported ordinary reasoning profile: ${model.id}`
-  );
+  const ordinaryProfiles = profiles.filter((p) => p.topology === 'ORDINARY');
+  if (ordinaryProfiles.length === 0) {
+    throw new WorkerAdapterError(
+      'REASONING_PROFILE_UNSUPPORTED',
+      `Codex model has no supported ordinary reasoning profile: ${model.id}`
+    );
+  }
+
+  let highestProfile: DiscoveredReasoningProfile | null = null;
+  let highestOrdinal = -1;
+
+  for (const profile of ordinaryProfiles) {
+    const ordinal = KNOWN_EFFORT_ORDINALS[profile.value];
+    if (ordinal === undefined) {
+      throw new WorkerAdapterError(
+        'REASONING_PROFILE_UNSUPPORTED',
+        `Codex model has unrecognized reasoning effort: ${profile.value} on model ${model.id}. Cannot determine ordering.`
+      );
+    }
+    if (ordinal > highestOrdinal) {
+      highestOrdinal = ordinal;
+      highestProfile = profile;
+    }
+  }
+
+  return highestProfile!;
 }

@@ -1,6 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { TextDecoder } from 'node:util';
+import { isPathContained } from '../utils/path-authority.js';
 
 export interface ProjectConfigAuthorityResult {
   allowed: boolean;
@@ -45,11 +47,23 @@ function pathState(filePath: string): PathState {
   }
 }
 
-function isContained(candidate: string, roots: string[]): boolean {
-  return roots.some((root) => {
-    const relative = path.relative(root, candidate);
-    return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-  });
+export function hashInspectedConfigs(inspectedFiles: string[]): string | null {
+  try {
+    const hash = createHash('sha256');
+    const sorted = [...inspectedFiles].sort();
+    for (const filePath of sorted) {
+      hash.update(filePath);
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath);
+        hash.update(content);
+      } else {
+        hash.update('__MISSING__');
+      }
+    }
+    return hash.digest('hex');
+  } catch {
+    return null;
+  }
 }
 
 function isValidBasicString(value: string): boolean {
@@ -201,7 +215,7 @@ function inspectFile(
   containmentRoots: string[]
 ): ProjectConfigAuthorityResult | undefined {
   inspectedFiles.push(filePath);
-  if (!isContained(filePath, containmentRoots)) return blocked(inspectedFiles, 'configuration escapes the bounded worktree');
+  if (!isPathContained(filePath, containmentRoots)) return blocked(inspectedFiles, 'configuration escapes the bounded worktree');
   let realFile: string;
   let realRoots: string[];
   try {
@@ -210,7 +224,7 @@ function inspectFile(
   } catch {
     return blocked(inspectedFiles, 'configuration containment could not be verified');
   }
-  if (!isContained(realFile, realRoots)) return blocked(inspectedFiles, 'configuration escapes the bounded worktree');
+  if (!isPathContained(realFile, realRoots)) return blocked(inspectedFiles, 'configuration escapes the bounded worktree');
   if (state.size > MAX_CONFIG_BYTES) return blocked(inspectedFiles, 'oversized configuration');
 
   const read = readBounded(realFile);

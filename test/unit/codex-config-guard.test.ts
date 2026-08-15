@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { inspectCodexProjectConfig } from '../../src/worker/codex-config-guard.js';
+import { hashInspectedConfigs, inspectCodexProjectConfig } from '../../src/worker/codex-config-guard.js';
 
 const roots: string[] = [];
 
@@ -93,5 +93,25 @@ describe('Codex project configuration authority guard', () => {
     expect(result.allowed).toBe(false);
     expect(result.reason).toMatch(/PERMISSION_BLOCKED.*oversized/i);
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('computes stable hashes for inspected configs and detects changes', () => {
+    const root = fixture('[model]\nreasoning_effort = "high"\n');
+    const configPath = path.join(root, '.codex', 'config.toml');
+
+    const hash1 = hashInspectedConfigs([configPath]);
+    const hash2 = hashInspectedConfigs([configPath]);
+    expect(hash1).toBeTruthy();
+    expect(hash1).toBe(hash2);
+
+    // Modify file
+    fs.writeFileSync(configPath, '[model]\nreasoning_effort = "low"\n', 'utf8');
+    const hashModified = hashInspectedConfigs([configPath]);
+    expect(hashModified).not.toBe(hash1);
+
+    // Empty inspected files
+    const emptyHash1 = hashInspectedConfigs([]);
+    const emptyHash2 = hashInspectedConfigs([]);
+    expect(emptyHash1).toBe(emptyHash2);
   });
 });

@@ -16,6 +16,7 @@ export type JobIntent =
 export type ExecutionMode = 'READ_ONLY' | 'WORKTREE_WRITE';
 
 export type JobState =
+  | 'PENDING'
   | 'DRAFT'
   | 'WORKER_REQUESTED'
   | 'WORKER_RUNNING'
@@ -298,6 +299,7 @@ export type OperationalFailureClass =
   | 'QUOTA_EXHAUSTED'
   | 'RATE_LIMITED'
   | 'PERMISSION_BLOCKED'
+  | 'RECURSION_BLOCKED'
   | 'TIMEOUT'
   | 'CANCELLED'
   | 'PROCESS_FAILED'

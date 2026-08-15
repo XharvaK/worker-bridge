@@ -21,7 +21,7 @@ afterEach(() => {
 describe('CodexAdapter fixture-backed CLI contract', () => {
   it('builds exact isolated initial and resume argv without dangerous bypasses', () => {
     const cwd = worktree();
-    const adapter = new CodexAdapter(fixtureExecutable);
+    const adapter = new CodexAdapter(fixtureExecutable, undefined, { allowBatchWrappers: true });
     const initial = adapter.buildInvocationArgs({
       jobId: 'argv-job', roundNumber: 1, executionMode: 'WORKTREE_WRITE', worktreeCwd: cwd,
       promptText: 'prompt', modelId: 'gpt-5.6-sol', variant: 'max',
@@ -44,7 +44,7 @@ describe('CodexAdapter fixture-backed CLI contract', () => {
   });
 
   it('verifies the explicitly configured fixture and reports its native version', async () => {
-    const adapter = new CodexAdapter(fixtureExecutable);
+    const adapter = new CodexAdapter(fixtureExecutable, undefined, { allowBatchWrappers: true });
 
     await expect(adapter.inspectEnvironment()).resolves.toMatchObject({
       platformId: 'codex',
@@ -55,7 +55,7 @@ describe('CodexAdapter fixture-backed CLI contract', () => {
   });
 
   it('discovers only the bundled catalog and preserves dynamic model metadata', async () => {
-    const adapter = new CodexAdapter(fixtureExecutable);
+    const adapter = new CodexAdapter(fixtureExecutable, undefined, { allowBatchWrappers: true });
 
     const models = await adapter.discoverModels(true);
 
@@ -79,7 +79,7 @@ describe('CodexAdapter fixture-backed CLI contract', () => {
   });
 
   it('resolves exact ordinary native reasoning and rejects unsafe profiles', async () => {
-    const adapter = new CodexAdapter(fixtureExecutable);
+    const adapter = new CodexAdapter(fixtureExecutable, undefined, { allowBatchWrappers: true });
 
     await expect(adapter.resolveReasoningProfile('gpt-5.6-sol')).resolves.toBe('max');
     await expect(adapter.resolveReasoningProfile('gpt-5.6-sol', 'explicit', 'max')).resolves.toBe('max');
@@ -91,7 +91,7 @@ describe('CodexAdapter fixture-backed CLI contract', () => {
 
   it('invokes the fixture with isolated exact controls and parses structured evidence', async () => {
     const cwd = worktree();
-    const adapter = new CodexAdapter(fixtureExecutable);
+    const adapter = new CodexAdapter(fixtureExecutable, undefined, { allowBatchWrappers: true });
 
     const result = await adapter.invokeWorker({
       jobId: 'job-codex-fixture',
@@ -127,11 +127,74 @@ describe('CodexAdapter fixture-backed CLI contract', () => {
       }
     }
     const processManager = new RecordingProcessManager();
-    const adapter = new CodexAdapter(fixtureExecutable, processManager);
+    const adapter = new CodexAdapter(fixtureExecutable, processManager, { allowBatchWrappers: true });
     await expect(adapter.invokeWorker({
       jobId: 'resume-job', roundNumber: 2, executionMode: 'READ_ONLY', worktreeCwd: worktree(),
       promptText: 'resume', modelId: 'gpt-5.6-sol', variant: 'max', sessionId: 'codex-fixture-session-001',
     })).rejects.toThrow('SESSION_ID_UNAVAILABLE');
     expect(processManager.calls).toBe(0);
+  });
+
+  it('parses JSONL lines and returns structured status', () => {
+    const adapter = new CodexAdapter();
+
+    // Unique session
+    const unique = adapter.parseJsonl('{"thread_id": "thread-1", "text": "hello"}\n{"text": " world"}');
+    expect(unique.sessionStatus).toBe('unique');
+    expect(unique.sessionId).toBe('thread-1');
+    expect(unique.text).toBe('hello world');
+
+    // Zero sessions
+    const none = adapter.parseJsonl('{"text": "no session id here"}');
+    expect(none.sessionStatus).toBe('none');
+    expect(none.sessionId).toBeUndefined();
+
+    // Ambiguous multiple sessions
+    const ambiguous = adapter.parseJsonl('{"thread_id": "t1"}\n{"thread_id": "t2"}');
+    expect(ambiguous.sessionStatus).toBe('ambiguous');
+    expect(ambiguous.sessionId).toBeUndefined();
+    expect(ambiguous.sessionIds).toEqual(['t1', 't2']);
+
+    // Malformed lines tracked
+    const malformed = adapter.parseJsonl('not valid json\n{"text": "valid"}');
+    expect(malformed.malformedLines).toBe(1);
+    expect(malformed.totalLines).toBe(2);
+    expect(malformed.text).toBe('valid');
+  });
+
+  it('detects config modification during execution and flags TOCTOU tamper', async () => {
+    const cwd = worktree();
+    fs.mkdirSync(path.join(cwd, '.codex'));
+    const configPath = path.join(cwd, '.codex', 'config.toml');
+    fs.writeFileSync(configPath, '[model]\nreasoning_effort = "high"\n', 'utf8');
+
+    class TamperingProcessManager extends ProcessManager {
+      override async run(_jobId: string, _options: ProcessRunOptions): Promise<ProcessRunResult> {
+        // Tamper with config while process is running
+        fs.writeFileSync(configPath, '[model]\nreasoning_effort = "low"\n', 'utf8');
+        return {
+          exitCode: 0,
+          stdout: '{"thread_id": "t1", "text": "tampered"}',
+          stderr: '',
+          timedOut: false,
+          pid: 1234,
+          outputTruncated: false,
+        };
+      }
+    }
+
+    const adapter = new CodexAdapter(fixtureExecutable, new TamperingProcessManager(), { allowBatchWrappers: true });
+    const result = await adapter.invokeWorker({
+      jobId: 'toctou-job',
+      roundNumber: 1,
+      executionMode: 'READ_ONLY',
+      worktreeCwd: cwd,
+      promptText: 'test',
+      modelId: 'gpt-5.6-sol',
+      variant: 'max',
+    });
+
+    expect(result.failureClass).toBe('PERMISSION_BLOCKED');
+    expect(result.rawFailureEvidence).toContain('TOCTOU detected');
   });
 });

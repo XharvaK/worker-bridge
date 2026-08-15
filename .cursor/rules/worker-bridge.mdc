@@ -1,0 +1,41 @@
+---
+description: Rules for Cursor Agent when invoking Worker Bridge MCP workers
+globs: *
+alwaysApply: false
+---
+
+# Cursor Agent Guide for Worker Bridge
+
+Worker Bridge provides platform-agnostic, headless worker execution across Antigravity (Gemini 3.7 Flash High), OpenCode, and OpenAI Codex CLI.
+
+## Architectural Invariants
+
+1. **Recursion is Blocked**: Cursor Agent is the northbound orchestrator. Never attempt to select `cursor` as a Worker Bridge target.
+2. **Explicit Authority Model**:
+   - `READ_ONLY` (`plan`, `investigate`, `audit`, `review`): Supported over MCP v1. Executes safely in isolated plan worktrees.
+   - `WORKTREE_WRITE` (`implement`, `fix`): **Blocked in MCP v1** (`OWNER_AUTHORITY_UNAVAILABLE`). Write tasks must be submitted through Doc's GitHub mailbox workflow.
+3. **Durable Execution**: Worker Bridge jobs run in a persistent local background service (`worker-bridge serve`). If your Cursor session disconnects or restarts, running jobs continue unaffected in the service. Use `worker_bridge_get_job` to re-attach.
+
+## Standard Workflow
+
+### 1. Discover Available Targets
+Call `worker_bridge_list_targets` to view configured models, platform bindings, and availability states.
+
+### 2. Prepare Dynamic Projects
+Before starting a job on a new project:
+Call `worker_bridge_prepare_project` with either:
+- `projectPath`: validates that the repository is inside the trusted root (`C:\Users\Xharv\Projects`).
+- `remote` + `destinationName`: clones a remote repository under the trusted root.
+
+### 3. Start a Job
+Call `worker_bridge_start_job` with:
+- `clientRequestId`: unique idempotency key.
+- `projectPath`: canonical path under trusted root.
+- `intent`: `'plan' | 'investigate' | 'review' | 'audit'`.
+- `executionMode`: `'READ_ONLY'`.
+- `goal`: clear prompt specifying requirements.
+
+### 4. Monitor & Retrieve Results
+- Check status using `worker_bridge_get_job(jobId)`.
+- When `state === 'WORKER_RETURNED'`, fetch full output via `worker_bridge_get_result(jobId)` (paginated in chunks up to 64 KB).
+- Review diff stats, verification outcomes, and changed files before presenting results to the user.

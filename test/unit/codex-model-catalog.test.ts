@@ -190,4 +190,88 @@ describe('Codex model catalog parsing', () => {
     expect(() => resolveCodexReasoningProfile(luna!, 'explicit', 'high')).toThrow('REASONING_PROFILE_UNSUPPORTED');
     expect(() => resolveCodexReasoningProfile(sol!, 'explicit', 'not-real')).toThrow('REASONING_PROFILE_UNSUPPORTED');
   });
+
+  it('selects the highest ordinal regardless of array order', () => {
+    const catalog = parseCodexModelCatalog({
+      models: [
+        {
+          slug: 'unordered-model',
+          display_name: 'Unordered Model',
+          visibility: 'list',
+          supported_in_api: true,
+          supported_reasoning_levels: [
+            { effort: 'high', description: 'Standard ordinary reasoning.', topology: 'ordinary' },
+            { effort: 'low', description: 'Standard ordinary reasoning.', topology: 'ordinary' },
+            { effort: 'medium', description: 'Standard ordinary reasoning.', topology: 'ordinary' },
+          ],
+        },
+      ],
+    });
+    expect(resolveCodexReasoningProfile(catalog.models[0]!, 'highest-supported').value).toBe('high');
+  });
+
+  it('fails closed when an ordinary profile has an unrecognized effort value', () => {
+    const catalog = parseCodexModelCatalog({
+      models: [
+        {
+          slug: 'unknown-effort-model',
+          display_name: 'Unknown Effort',
+          visibility: 'list',
+          supported_in_api: true,
+          supported_reasoning_levels: [
+            { effort: 'low', description: 'Standard ordinary reasoning.', topology: 'ordinary' },
+            { effort: 'turbo', description: 'Standard ordinary reasoning.', topology: 'ordinary' },
+          ],
+        },
+      ],
+    });
+    expect(() => resolveCodexReasoningProfile(catalog.models[0]!, 'highest-supported')).toThrow(
+      'REASONING_PROFILE_UNSUPPORTED'
+    );
+  });
+
+  it('deduplicates profiles with the same effort value', () => {
+    const catalog = parseCodexModelCatalog({
+      models: [
+        {
+          slug: 'duplicate-effort-model',
+          display_name: 'Duplicate Effort',
+          visibility: 'list',
+          supported_in_api: true,
+          supported_reasoning_levels: [
+            { effort: 'high', description: 'Standard ordinary reasoning.', topology: 'ordinary' },
+            { effort: 'high', description: 'Same again.', topology: 'ordinary' },
+          ],
+        },
+      ],
+    });
+    expect(resolveCodexReasoningProfile(catalog.models[0]!, 'highest-supported').value).toBe('high');
+  });
+
+  it('rejects catalogs with duplicate model IDs', () => {
+    expect(() =>
+      parseCodexModelCatalog({
+        models: [
+          { slug: 'same-id', display_name: 'First', visibility: 'list', supported_reasoning_levels: [] },
+          { slug: 'same-id', display_name: 'Second', visibility: 'list', supported_reasoning_levels: [] },
+        ],
+      })
+    ).toThrow('MODEL_DISCOVERY_UNAVAILABLE');
+  });
+
+  it('fails closed when profiles have no effort field', () => {
+    expect(() =>
+      parseCodexModelCatalog({
+        models: [
+          {
+            slug: 'no-effort-model',
+            display_name: 'No Effort',
+            visibility: 'list',
+            supported_in_api: true,
+            supported_reasoning_levels: [{ description: 'Missing effort field.', topology: 'ordinary' }],
+          },
+        ],
+      })
+    ).toThrow('MODEL_DISCOVERY_UNAVAILABLE');
+  });
 });

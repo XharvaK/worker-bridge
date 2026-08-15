@@ -4,6 +4,8 @@ import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getSafeProcessInvocation, ProcessManager } from '../engine/process-manager.js';
+import { logger } from '../utils/logger.js';
+import { filterEnv, CODEX_ENV_POLICY } from '../utils/env-filter.js';
 import {
   DiscoveredModel,
   ExecutionMode,
@@ -12,7 +14,7 @@ import {
   WorkerRoundResult,
   WorkerSessionIdentity,
 } from '../types.js';
-import { inspectCodexProjectConfig } from './codex-config-guard.js';
+import { hashInspectedConfigs, inspectCodexProjectConfig } from './codex-config-guard.js';
 import { assertCodexModelSelectable, parseCodexModelCatalog, resolveCodexReasoningProfile } from './codex-model-catalog.js';
 import { WorkerAdapter, WorkerAdapterError, WorkerPlatformInfo, analyzeOperationalError } from './worker-adapter.js';
 
@@ -22,8 +24,23 @@ const MAX_EVENTS = 128;
 
 export const DEFAULT_CODEX_PATH = 'codex';
 
+export interface JsonlParseResult {
+  sessionStatus: 'unique' | 'none' | 'ambiguous' | 'parse_failed';
+  sessionId?: string;
+  sessionIds: string[];
+  text: string;
+  toolSummary: Record<string, number>;
+  lastMeaningfulAction?: string;
+  malformedLines: number;
+  totalLines: number;
+}
+
 function isDefaultCodexExecutable(executable: string): boolean {
   return executable === DEFAULT_CODEX_PATH;
+}
+
+function isWindowsBatchScript(filePath: string): boolean {
+  return process.platform === 'win32' && /\.(bat|cmd)$/i.test(filePath);
 }
 
 function sessionIds(value: unknown, found: string[] = []): string[] {
@@ -53,22 +70,37 @@ function textValues(value: unknown, result: string[] = []): string[] {
   return result;
 }
 
+export interface CodexAdapterOptions {
+  allowBatchWrappers?: boolean;
+}
+
 export class CodexAdapter implements WorkerAdapter {
   readonly platformId = 'codex';
   readonly supportsCrossModelSessionContinuation = false;
-  private executable: string;
+  private readonly configuredExecutable: string;
   private readonly executableWasExplicitlyConfigured: boolean;
+  private readonly allowBatchWrappers: boolean;
+  private discoveredExecutable: string | null = null;
+  private discoveredVersion: string | null = null;
+  private discoveredAt = 0;
   private processManager: ProcessManager;
   private cachedModels: DiscoveredModel[] | null = null;
   private cacheTimestamp = 0;
 
-  constructor(executable?: string, processManager?: ProcessManager) {
+  constructor(executable?: string, processManager?: ProcessManager, options?: CodexAdapterOptions) {
     this.executableWasExplicitlyConfigured = executable !== undefined;
-    this.executable = executable ?? DEFAULT_CODEX_PATH;
+    this.configuredExecutable = executable ?? DEFAULT_CODEX_PATH;
     this.processManager = processManager || new ProcessManager();
+    this.allowBatchWrappers = options?.allowBatchWrappers ?? false;
   }
 
-  getExecutablePath(): string { return this.executable; }
+  get effectiveExecutable(): string {
+    return this.discoveredExecutable ?? this.configuredExecutable;
+  }
+
+  getExecutablePath(): string {
+    return this.effectiveExecutable;
+  }
 
   private async runDirect(executable: string, args: string[], timeout = 15_000): Promise<{ stdout: string; stderr: string }> {
     const invocation = getSafeProcessInvocation(executable, args);
@@ -77,12 +109,33 @@ export class CodexAdapter implements WorkerAdapter {
   }
 
   async inspectEnvironment(): Promise<WorkerPlatformInfo> {
-    const configured = this.executable;
+    const configured = this.configuredExecutable;
+
+    if (!this.allowBatchWrappers && this.executableWasExplicitlyConfigured && isWindowsBatchScript(configured)) {
+      return {
+        platformId: this.platformId,
+        displayName: 'Codex CLI',
+        installed: false,
+        executablePath: configured,
+        error: `CLI_MISSING: Codex production executable must be a binary (.exe), not a batch wrapper. Received: "${configured}".`,
+      };
+    }
+
+    if (this.discoveredExecutable && Date.now() - this.discoveredAt < CACHE_MS) {
+      return {
+        platformId: this.platformId,
+        displayName: 'Codex CLI',
+        installed: true,
+        version: this.discoveredVersion || '',
+        executablePath: this.discoveredExecutable,
+      };
+    }
+
     const candidates = [configured];
     if (!this.executableWasExplicitlyConfigured && isDefaultCodexExecutable(configured)) {
       if (process.platform === 'win32') {
         try {
-          const where = await this.runDirect('where.exe', ['codex.exe', 'codex.cmd']);
+          const where = await this.runDirect('where.exe', ['codex.exe']);
           candidates.push(...where.stdout.split(/\r?\n/).map((candidate) => candidate.trim()).filter(Boolean));
         } catch { /* candidate search is best effort */ }
         const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
@@ -95,10 +148,13 @@ export class CodexAdapter implements WorkerAdapter {
     }
     for (const candidate of candidates) {
       if (!candidate) continue;
+      if (!this.allowBatchWrappers && isWindowsBatchScript(candidate)) continue;
       try {
         const version = (await this.runDirect(candidate, ['--version'])).stdout.trim();
         if (version) {
-          if (candidate !== configured && isDefaultCodexExecutable(configured)) this.executable = candidate;
+          this.discoveredExecutable = candidate;
+          this.discoveredVersion = version;
+          this.discoveredAt = Date.now();
           return { platformId: this.platformId, displayName: 'Codex CLI', installed: true, version, executablePath: candidate };
         }
       } catch { /* try the next verified candidate */ }
@@ -109,8 +165,11 @@ export class CodexAdapter implements WorkerAdapter {
   async discoverModels(refresh = false): Promise<DiscoveredModel[]> {
     if (!refresh && this.cachedModels && Date.now() - this.cacheTimestamp < CACHE_MS) return this.cachedModels;
     try {
-      const { stdout } = await this.runDirect(this.executable, ['debug', 'models', '--bundled']);
+      const { stdout } = await this.runDirect(this.effectiveExecutable, ['debug', 'models', '--bundled']);
       const parsed = parseCodexModelCatalog(JSON.parse(stdout));
+      if (parsed.models.length > 128) {
+        logger.warn(`Codex bundled catalog contains ${parsed.models.length} models; truncating to 128.`);
+      }
       this.cachedModels = parsed.models.slice(0, 128);
       this.cacheTimestamp = Date.now();
       return this.cachedModels;
@@ -152,8 +211,17 @@ export class CodexAdapter implements WorkerAdapter {
   }
 
   async invokeWorker(request: WorkerInvocationRequest): Promise<WorkerRoundResult> {
+    const executable = this.effectiveExecutable;
+    if (!this.allowBatchWrappers && isWindowsBatchScript(executable)) {
+      throw new WorkerAdapterError('CLI_MISSING', `Codex production executable must be a binary (.exe), not a batch wrapper. Received: "${executable}".`);
+    }
     const startedAt = new Date().toISOString();
-    await this.validateExecutionContext(request);
+    const guard = inspectCodexProjectConfig(request.worktreeCwd);
+    if (!guard.allowed) {
+      throw new WorkerAdapterError('PERMISSION_BLOCKED', guard.reason || 'Codex project configuration is not authorized.');
+    }
+    const preConfigHash = hashInspectedConfigs(guard.inspectedFiles);
+
     const reasoning = request.variant
       ? await this.resolveReasoningProfile(request.modelId, 'explicit', request.variant)
       : await this.resolveReasoningProfile(request.modelId);
@@ -164,41 +232,117 @@ export class CodexAdapter implements WorkerAdapter {
         throw new WorkerAdapterError('SESSION_ID_UNAVAILABLE', 'Codex resume identity is missing or does not match the authority envelope.');
       }
     }
+
+    const filteredEnv = filterEnv(CODEX_ENV_POLICY);
+
     const result = await this.processManager.run(request.jobId, {
-      executable: this.executable,
+      executable,
       args: this.buildInvocationArgs(request, reasoning),
       cwd: request.worktreeCwd,
       stdinText: request.promptText,
+      env: filteredEnv,
       timeoutSeconds: request.timeoutSeconds || 900,
     });
     const completedAt = new Date().toISOString();
-    const failure = result.exitCode !== 0 || result.timedOut ? analyzeOperationalError(result.exitCode, result.stdout, result.stderr, result.timedOut, startedAt) : undefined;
-    let parsed: { sessionId?: string; text: string; toolSummary: Record<string, number>; lastMeaningfulAction?: string };
-    try {
-      parsed = this.parseJsonl(result.stdout);
-    } catch (error) {
-      if (!failure) throw error;
-      parsed = { text: '', toolSummary: {} };
+
+    const postConfigHash = hashInspectedConfigs(guard.inspectedFiles);
+    if (preConfigHash !== null && postConfigHash !== null && preConfigHash !== postConfigHash) {
+      return {
+        platformId: this.platformId,
+        modelId: request.modelId,
+        variant: reasoning,
+        platformSessionId: undefined,
+        exitCode: 1,
+        responseText: '',
+        artifactsCreated: [],
+        toolSummary: {},
+        startedAt,
+        completedAt,
+        failureClass: 'PERMISSION_BLOCKED',
+        rawFailureEvidence: 'Codex project configuration was modified during execution (TOCTOU detected).',
+        requestPrompt: request.promptText,
+        rawStderr: result.stderr,
+        evidence: {
+          stdout: result.stdout,
+          stderr: result.stderr,
+          partialResponse: '',
+          outputTruncated: result.outputTruncated,
+          toolSummary: {},
+        },
+      };
     }
-    const sessionIdentity: WorkerSessionIdentity = { platform: this.platformId, model: request.modelId, reasoning, sessionId: parsed.sessionId, worktreeCwd: request.worktreeCwd, executionMode: request.executionMode };
+
+    const parsed = this.parseJsonl(result.stdout);
+    const failure = result.exitCode !== 0 || result.timedOut
+      ? analyzeOperationalError(result.exitCode, result.stdout, result.stderr, result.timedOut, startedAt)
+      : undefined;
+
+    if (!failure) {
+      if (parsed.sessionStatus === 'ambiguous') {
+        throw new WorkerAdapterError('SESSION_ID_UNAVAILABLE', 'Codex emitted conflicting session IDs.');
+      }
+      if (parsed.sessionStatus === 'none' || parsed.sessionStatus === 'parse_failed') {
+        throw new WorkerAdapterError('SESSION_ID_UNAVAILABLE', 'Codex emitted no machine-readable session ID.');
+      }
+    }
+
+    const sessionIdentity: WorkerSessionIdentity = {
+      platform: this.platformId,
+      model: request.modelId,
+      reasoning,
+      sessionId: parsed.sessionId,
+      worktreeCwd: request.worktreeCwd,
+      executionMode: request.executionMode,
+    };
+
     return {
-      platformId: this.platformId, modelId: request.modelId, variant: reasoning, platformSessionId: parsed.sessionId, exitCode: result.exitCode,
-      responseText: parsed.text, artifactsCreated: [], toolSummary: parsed.toolSummary, startedAt, completedAt,
-      failureClass: failure?.failureClass, retryAt: failure?.retryAt, rawFailureEvidence: failure?.rawEvidence, requestPrompt: request.promptText,
-      rawStderr: result.stderr, sessionIdentity,
-      evidence: { stdout: result.stdout, stderr: result.stderr, partialResponse: parsed.text, outputTruncated: result.outputTruncated, toolSummary: parsed.toolSummary, sessionId: parsed.sessionId, lastMeaningfulAction: parsed.lastMeaningfulAction },
+      platformId: this.platformId,
+      modelId: request.modelId,
+      variant: reasoning,
+      platformSessionId: parsed.sessionId,
+      exitCode: result.exitCode,
+      responseText: parsed.text,
+      artifactsCreated: [],
+      toolSummary: parsed.toolSummary,
+      startedAt,
+      completedAt,
+      failureClass: failure?.failureClass,
+      retryAt: failure?.retryAt,
+      rawFailureEvidence: failure?.rawEvidence,
+      requestPrompt: request.promptText,
+      rawStderr: result.stderr,
+      sessionIdentity,
+      evidence: {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        partialResponse: parsed.text,
+        outputTruncated: result.outputTruncated,
+        toolSummary: parsed.toolSummary,
+        sessionId: parsed.sessionId,
+        lastMeaningfulAction: parsed.lastMeaningfulAction,
+      },
     };
   }
 
-  private parseJsonl(stdout: string): { sessionId?: string; text: string; toolSummary: Record<string, number>; lastMeaningfulAction?: string } {
+  parseJsonl(stdout: string): JsonlParseResult {
     const ids: string[] = [];
     const texts: string[] = [];
     const toolSummary: Record<string, number> = {};
     let lastMeaningfulAction: string | undefined;
-    for (const line of stdout.split(/\r?\n/).slice(0, MAX_EVENTS)) {
+    let malformedLines = 0;
+    let totalLines = 0;
+
+    const lines = stdout.split(/\r?\n/).slice(0, MAX_EVENTS);
+    for (const line of lines) {
       if (!line.trim()) continue;
+      totalLines += 1;
       let event: unknown;
-      try { event = JSON.parse(line); } catch { continue; }
+      try {
+        event = JSON.parse(line);
+      } catch {
+        malformedLines += 1;
+        continue;
+      }
       sessionIds(event, ids);
       if (event && typeof event === 'object' && !Array.isArray(event) && 'type' in event && (event as { type?: unknown }).type === 'tool') {
         const name = event && typeof event === 'object' && 'name' in event && typeof (event as { name?: unknown }).name === 'string' ? (event as { name: string }).name : 'unknown';
@@ -207,9 +351,27 @@ export class CodexAdapter implements WorkerAdapter {
       }
       texts.push(...textValues(event));
     }
+
     const uniqueIds = [...new Set(ids)];
-    if (uniqueIds.length !== 1) throw new WorkerAdapterError('SESSION_ID_UNAVAILABLE', uniqueIds.length ? 'Codex emitted conflicting session IDs.' : 'Codex emitted no machine-readable session ID.');
-    return { sessionId: uniqueIds[0], text: texts.join('').trim(), toolSummary, lastMeaningfulAction };
+    let sessionStatus: JsonlParseResult['sessionStatus'];
+    if (uniqueIds.length === 1) {
+      sessionStatus = 'unique';
+    } else if (uniqueIds.length === 0) {
+      sessionStatus = malformedLines > 0 && totalLines === malformedLines ? 'parse_failed' : 'none';
+    } else {
+      sessionStatus = 'ambiguous';
+    }
+
+    return {
+      sessionStatus,
+      sessionId: uniqueIds.length === 1 ? uniqueIds[0] : undefined,
+      sessionIds: uniqueIds,
+      text: texts.join('').trim(),
+      toolSummary,
+      lastMeaningfulAction,
+      malformedLines,
+      totalLines,
+    };
   }
 
   async cancel(jobId: string): Promise<boolean> { return this.processManager.cancelJob(jobId); }

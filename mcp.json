@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "worker-bridge": {
+      "command": "node",
+      "args": ["C:/Users/Xharv/Projects/worker-bridge/dist/index.js", "mcp-stdio"]
+    }
+  }
+}

@@ -26,6 +26,7 @@ export interface FallbackResolutionOptions {
   avoidTargetId?: string;
   now?: Date;
   authorizedFallback?: ExplicitFallbackSelection;
+  excludedPlatforms?: Set<string> | string[];
 }
 
 export interface ResolvedWorkerSelection {
@@ -202,13 +203,35 @@ export class ModelSelector {
     };
   }
 
-  async resolveExplicitSelection(requested: WorkerSelection): Promise<ResolvedWorkerSelection> {
+  async resolveExplicitSelection(
+    requested: WorkerSelection,
+    excludedPlatforms?: Set<string> | string[]
+  ): Promise<ResolvedWorkerSelection> {
+    const excludedPlats = excludedPlatforms instanceof Set
+      ? excludedPlatforms
+      : new Set(excludedPlatforms ? (Array.isArray(excludedPlatforms) ? excludedPlatforms : [excludedPlatforms]) : []);
+
+    if (requested.platform && excludedPlats.has(requested.platform.toLowerCase())) {
+      throw new WorkerAdapterError(
+        'RECURSION_BLOCKED',
+        `Platform "${requested.platform}" is excluded in this execution context (recursion blocked).`
+      );
+    }
+
     const target = this.findTarget(requested);
     if (!target) {
       throw new Error(
         `MODEL_SELECTION_ERROR: Explicit target "${requested.targetId || requested.model || ''}" is not configured in local target policy.`
       );
     }
+
+    if (excludedPlats.has(target.platformId.toLowerCase())) {
+      throw new WorkerAdapterError(
+        'RECURSION_BLOCKED',
+        `Platform "${target.platformId}" for target "${target.targetId}" is excluded in this execution context (recursion blocked).`
+      );
+    }
+
     return this.resolveTarget(target, requested, true);
   }
 
@@ -217,11 +240,16 @@ export class ModelSelector {
     roleOrIntent: WorkerRole | JobIntent = 'PLANNER',
     excludedTargetIds: Set<string> | ExecutionMode = new Set(),
     avoidTargetId?: string,
-    now = new Date()
+    now = new Date(),
+    excludedPlatforms?: Set<string> | string[]
   ): Promise<ResolvedWorkerSelection> {
+    const excludedPlats = excludedPlatforms instanceof Set
+      ? excludedPlatforms
+      : new Set(excludedPlatforms ? (Array.isArray(excludedPlatforms) ? excludedPlatforms : [excludedPlatforms]) : []);
+
     const explicit = !!requested && (!!requested.targetId || (!!requested.model && !['auto', 'your call'].includes(requested.model.toLowerCase())));
     if (explicit) {
-      return this.resolveExplicitSelection(requested!);
+      return this.resolveExplicitSelection(requested!, excludedPlats);
     }
 
     const role = this.resolveRole(roleOrIntent);
@@ -230,8 +258,9 @@ export class ModelSelector {
     const requestedPlatform = requested?.platform?.toLowerCase();
     const candidates = ranking.filter((targetId) => {
       if (excluded.has(targetId)) return false;
-      if (!requestedPlatform) return true;
       const target = this.policy.targets[targetId];
+      if (target && excludedPlats.has(target.platformId.toLowerCase())) return false;
+      if (!requestedPlatform) return true;
       return target?.platformId.toLowerCase() === requestedPlatform;
     });
     const ordered = avoidTargetId
@@ -241,6 +270,7 @@ export class ModelSelector {
     for (const targetId of ordered) {
       const target = this.policy.targets[targetId];
       if (!target || target.explicitOnly) continue;
+      if (excludedPlats.has(target.platformId.toLowerCase())) continue;
       if (!this.platformEnabled(target.platformId) || !this.availability.isEligible(targetId, now)) continue;
 
       const adapter = this.registry.get(target.platformId);
@@ -299,7 +329,7 @@ export class ModelSelector {
         ? optionsOrMode
         : { failedTargetIds: failedTargetIds || new Set<string>(), avoidTargetId, now: legacyNow };
     if (options.authorizedFallback) {
-      const explicit = await this.resolveExplicitSelection(options.authorizedFallback);
+      const explicit = await this.resolveExplicitSelection(options.authorizedFallback, options.excludedPlatforms);
       if (options.failedTargetIds.has(explicit.targetId) || explicit.targetId === current.targetId) {
         throw new Error(`MODEL_SELECTION_ERROR: Authorized fallback target "${explicit.targetId}" has already failed.`);
       }
@@ -307,7 +337,14 @@ export class ModelSelector {
     }
     const excluded = new Set(options.failedTargetIds);
     excluded.add(current.targetId);
-    return this.resolveSelection(undefined, roleOrIntent, excluded, options.avoidTargetId, options.now || new Date());
+    return this.resolveSelection(
+      undefined,
+      roleOrIntent,
+      excluded,
+      options.avoidTargetId,
+      options.now || new Date(),
+      options.excludedPlatforms
+    );
   }
 
   canContinueSession(

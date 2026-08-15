@@ -69,7 +69,7 @@ class RecoveryTestAdapter implements WorkerAdapter {
         failureClass: request.executionMode === 'READ_ONLY' || this.mode === 'quota-write' || this.mode === 'quota-write-no-effects'
           ? 'QUOTA_EXHAUSTED'
           : undefined,
-        retryAt: '2026-08-14T23:00:00.000Z',
+        retryAt: new Date(Date.now() + 3600_000).toISOString(),
         rawFailureEvidence: 'quota exhausted; retry-after: 3600',
         requestPrompt: request.promptText,
         evidence: {

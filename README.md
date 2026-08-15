@@ -22,7 +22,7 @@ A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGP
        selected model        selected model       exact selected model
 ```
 
-1. **Workflow Ownership**: The JOB belongs to Sol/Doc. Worker platforms and models are replaceable execution substrates.
+1. **Workflow Ownership**: The workflow belongs to Doc (the human operator). Sol is an AI assistant / architectural reviewer. AI outputs and assistant recommendations do not constitute owner authorization.
 2. **Core Invariants**:
    - `WORKER PLATFORM != WORKFLOW`
    - `MODEL != AUTHORITY`
@@ -31,9 +31,9 @@ A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGP
    - `GITHUB MAILBOX != AUTHORITY`
    - `LOCAL BRIDGE CONFIG OWNS LOCAL EXECUTION AUTHORITY`
    - `READ-ONLY DISPATCH != WRITE AUTHORITY`
-3. **Owner Approval Gate**:
-   - `READ_ONLY` mode (`plan`, `design`, `investigate`, `review`, `audit`) is authorized directly by initial dispatch.
-   - `WORKTREE_WRITE` mode (`implement`, `fix`) strictly requires explicit owner approval (`ownerApproval: { approved: true }`).
+3. **Authority Model**:
+   - **MCP v1 (Cursor Agent)**: Strictly `READ_ONLY` (`plan`, `design`, `investigate`, `review`, `audit`). `WORKTREE_WRITE` is failed closed with `OWNER_AUTHORITY_UNAVAILABLE` to eliminate unauthenticated same-user write escalation.
+   - **Non-MCP Operator-Controlled Write Path**: `WORKTREE_WRITE` (`implement`, `fix`) is performed through direct operator CLI execution (`worker-bridge run-once`) or the local mailbox daemon (`worker-bridge start`), guarded by local configuration, path containment, and branch isolation.
 4. **Highest Reasoning Default**:
    - AGY and OpenCode use their existing highest supported profiles unless explicitly overridden. An explicit Codex model with omitted reasoning resolves to the highest discovered ordinary native profile. Unknown topology fails closed.
 5. **Opus Policy**:
@@ -92,21 +92,46 @@ A lightweight, secure, local development bridge connecting **Doc / Sol** (ChatGP
 
 ---
 
-## Quick Setup
+## Running Worker Bridge
 
-1. **Configure the Bridge**:
-   - Copy `config.example.json` to `config.json`.
-   - Update repository paths in `config.json`.
+### Mode A: Durable Background Service + Cursor MCP Interface
 
-2. **Build & Test**:
+1. **Start the durable background service**:
    ```bash
-   npm run build
-   npm test
+   node dist/index.js serve
+   ```
+   Listens on local Windows Named Pipe `\\.\pipe\worker-bridge-<username>` (or Unix domain socket).
+
+2. **Configure Cursor IDE**:
+   Add to `~/.cursor/mcp.json` or project `.cursor/mcp.json`:
+   ```json
+   {
+     "mcpServers": {
+       "worker-bridge": {
+         "command": "node",
+         "args": ["C:/Users/Xharv/Projects/worker-bridge/dist/index.js", "mcp-stdio"]
+       }
+     }
+   }
    ```
 
-3. **Start the Bridge**:
-   ```bash
-   npm start
-   ```
+3. **Authority Boundaries in MCP v1**:
+   - `READ_ONLY` tasks (`plan`, `investigate`, `audit`, `review`) execute immediately.
+   - `WORKTREE_WRITE` tasks (`implement`, `fix`) fail closed with `OWNER_AUTHORITY_UNAVAILABLE`. Use Mode B for write operations.
 
-Codex real-provider smoke is not part of `npm test` and was not run for this implementation. The opt-in `test:real-smoke` path remains separate and requires separate authorization.
+### Mode B: Continuous GitHub Mailbox Daemon (Owner-Authorized Write Mode)
+
+```bash
+node dist/index.js start
+```
+
+---
+
+## Testing
+
+```bash
+npm run build
+npm test
+```
+
+Codex real-provider smoke is not part of `npm test` and is not run automatically. The opt-in `test:real-smoke` path remains separate and requires separate operator authorization.

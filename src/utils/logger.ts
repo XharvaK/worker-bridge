@@ -15,7 +15,9 @@ export class Logger {
     ERROR: 3,
   };
 
-  constructor(options?: { logFilePath?: string; minLevel?: LogLevel }) {
+  private useStderrOnly = false;
+
+  constructor(options?: { logFilePath?: string; minLevel?: LogLevel; useStderrOnly?: boolean }) {
     if (options?.logFilePath) {
       this.logFilePath = options.logFilePath;
       const dir = path.dirname(this.logFilePath);
@@ -26,6 +28,13 @@ export class Logger {
     if (options?.minLevel) {
       this.minLevel = options.minLevel;
     }
+    if (options?.useStderrOnly !== undefined) {
+      this.useStderrOnly = options.useStderrOnly;
+    }
+  }
+
+  setUseStderr(useStderr: boolean): void {
+    this.useStderrOnly = useStderr;
   }
 
   private shouldLog(level: LogLevel): boolean {
@@ -42,7 +51,9 @@ export class Logger {
   private write(level: LogLevel, message: string, context?: Record<string, unknown>) {
     if (!this.shouldLog(level)) return;
     const formatted = this.formatMessage(level, message, context);
-    if (level === 'ERROR') {
+    if (this.useStderrOnly || process.env.WORKER_BRIDGE_MCP === '1') {
+      process.stderr.write(formatted + '\n');
+    } else if (level === 'ERROR') {
       console.error(formatted);
     } else if (level === 'WARN') {
       console.warn(formatted);

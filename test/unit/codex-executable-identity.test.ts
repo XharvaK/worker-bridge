@@ -1,68 +1,53 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
+import { CodexAdapter, DEFAULT_CODEX_PATH } from '../../src/worker/codex-adapter.js';
 
-const execFileMock = vi.hoisted(() => vi.fn());
+describe('Codex executable identity and .cmd rejection', () => {
+  it('rejects explicit .cmd executable during invocation', async () => {
+    const adapter = new CodexAdapter('C:\\tools\\codex.cmd');
+    expect(adapter.getExecutablePath()).toBe('C:\\tools\\codex.cmd');
 
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, execFile: execFileMock };
-});
-
-import { CodexAdapter } from '../../src/worker/codex-adapter.js';
-
-function configureVersionProbeMock(): void {
-  execFileMock.mockImplementation((executable: string, args: string[], _options: unknown, callback: (error: Error | null, result?: { stdout: string; stderr: string }) => void) => {
-    if (executable === 'codex' || executable === 'codex.exe' || executable === 'codex.cmd' || (executable !== 'where.exe' && args.includes('codex.cmd'))) {
-      callback(Object.assign(new Error('explicit executable is unavailable'), { code: 'ENOENT' }));
-      return;
-    }
-    if (executable === 'where.exe') {
-      callback(null, { stdout: `C:\\fixture\\resolved-${args[0] || 'codex'}`, stderr: '' });
-      return;
-    }
-    callback(null, { stdout: 'codex-cli 0.147.0', stderr: '' });
-  });
-}
-
-describe('CodexAdapter executable identity', () => {
-  beforeEach(() => {
-    execFileMock.mockReset();
-    configureVersionProbeMock();
+    await expect(
+      adapter.invokeWorker({
+        jobId: 'job-cmd-test',
+        roundNumber: 1,
+        modelId: 'gpt-5.6-sol',
+        worktreeCwd: process.cwd(),
+        executionMode: 'READ_ONLY',
+        promptText: 'test prompt',
+      })
+    ).rejects.toThrow('Codex production executable must be a binary (.exe), not a batch wrapper.');
   });
 
-  it.each(['codex.exe', 'codex.cmd'])('does not replace explicitly configured %s with a discovery candidate', async (executable) => {
-    const adapter = new CodexAdapter(executable);
-
-    const environment = await adapter.inspectEnvironment();
-
-    expect(environment).toMatchObject({
-      installed: false,
-      executablePath: executable,
-    });
-    expect(execFileMock.mock.calls).toHaveLength(1);
-    expect(execFileMock.mock.calls.some(([file]) => file === 'where.exe')).toBe(false);
-    const invocations = execFileMock.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
-    expect(invocations).toContain(executable);
-    expect(adapter.getExecutablePath()).toBe(executable);
+  it('rejects explicit .bat executable during invocation', async () => {
+    const adapter = new CodexAdapter('C:\\tools\\codex.bat');
+    await expect(
+      adapter.invokeWorker({
+        jobId: 'job-bat-test',
+        roundNumber: 1,
+        modelId: 'gpt-5.6-sol',
+        worktreeCwd: process.cwd(),
+        executionMode: 'READ_ONLY',
+        promptText: 'test prompt',
+      })
+    ).rejects.toThrow('Codex production executable must be a binary (.exe), not a batch wrapper.');
   });
 
-  it('does not replace an explicitly configured bare codex name', async () => {
-    const adapter = new CodexAdapter('codex');
-
-    const environment = await adapter.inspectEnvironment();
-
-    expect(environment).toMatchObject({ installed: false, executablePath: 'codex' });
-    expect(execFileMock.mock.calls).toHaveLength(1);
-    expect(execFileMock.mock.calls.some(([file]) => file === 'where.exe')).toBe(false);
-    expect(adapter.getExecutablePath()).toBe('codex');
+  it('reports installed: false when only batch wrapper is explicitly configured', async () => {
+    const adapter = new CodexAdapter('C:\\tools\\codex.cmd');
+    const info = await adapter.inspectEnvironment();
+    expect(info.installed).toBe(false);
+    expect(info.error).toContain('Codex production executable must be a binary (.exe), not a batch wrapper.');
   });
 
-  it('preserves default candidate discovery when the executable argument is omitted', async () => {
+  it('preserves configured executable and separates effective executable', () => {
+    const adapter = new CodexAdapter('codex-custom.exe');
+    expect(adapter.getExecutablePath()).toBe('codex-custom.exe');
+    expect(adapter.effectiveExecutable).toBe('codex-custom.exe');
+  });
+
+  it('defaults to standard codex executable name', () => {
     const adapter = new CodexAdapter();
-
-    const environment = await adapter.inspectEnvironment();
-
-    expect(environment).toMatchObject({ installed: true, executablePath: 'C:\\fixture\\resolved-codex.exe' });
-    expect(execFileMock.mock.calls.map(([file]) => file)).toEqual(['where.exe', 'codex', 'C:\\fixture\\resolved-codex.exe']);
-    expect(adapter.getExecutablePath()).toBe('C:\\fixture\\resolved-codex.exe');
+    expect(adapter.getExecutablePath()).toBe(DEFAULT_CODEX_PATH);
+    expect(adapter.effectiveExecutable).toBe(DEFAULT_CODEX_PATH);
   });
 });

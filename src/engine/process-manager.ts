@@ -34,6 +34,7 @@ export interface SafeProcessInvocation {
   args: string[];
 }
 
+/** @internal Test fixture only. Production workers must use direct binaries. */
 export function getSafeProcessInvocation(executable: string, args: string[]): SafeProcessInvocation {
   const isWindowsBatch = process.platform === 'win32' && /\.(bat|cmd)$/i.test(executable);
   return isWindowsBatch

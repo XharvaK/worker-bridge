@@ -12,6 +12,7 @@ import { sanitizeSecrets } from '../utils/sanitizer.js';
 export interface TargetAvailabilityStore {
   get(targetId: string, now?: Date): TargetAvailabilityRecord | null;
   isEligible(targetId: string, now?: Date): boolean;
+  refreshEligibility(now?: Date): void;
   recordFailure(
     target: WorkerTargetConfig,
     failureClass: OperationalFailureClass,
@@ -71,21 +72,31 @@ export class TargetAvailabilityLedger implements TargetAvailabilityStore {
     fs.renameSync(temporaryPath, this.ledgerPath);
   }
 
-  get(targetId: string, now = new Date()): TargetAvailabilityRecord | null {
+  get(targetId: string, _now = new Date()): TargetAvailabilityRecord | null {
     const record = this.data.targets[targetId];
     if (!record) return null;
+    return { ...record };
+  }
 
-    if (record.state === 'COOLDOWN' && record.retryAt && now.getTime() >= Date.parse(record.retryAt)) {
-      record.state = 'ELIGIBLE_TO_RETRY';
+  refreshEligibility(now = new Date()): void {
+    let changed = false;
+    for (const record of Object.values(this.data.targets)) {
+      if (record.state === 'COOLDOWN' && record.retryAt && now.getTime() >= Date.parse(record.retryAt)) {
+        record.state = 'ELIGIBLE_TO_RETRY';
+        changed = true;
+      }
+    }
+    if (changed) {
       this.save();
     }
-
-    return { ...record };
   }
 
   isEligible(targetId: string, now = new Date()): boolean {
     const record = this.get(targetId, now);
     if (!record) return true;
+    if (record.state === 'COOLDOWN' && record.retryAt && now.getTime() >= Date.parse(record.retryAt)) {
+      return true;
+    }
     return (
       record.state === 'AVAILABLE' ||
       record.state === 'LOW' ||
@@ -139,18 +150,27 @@ export class TargetAvailabilityLedger implements TargetAvailabilityStore {
 export class InMemoryTargetAvailabilityStore implements TargetAvailabilityStore {
   private readonly records = new Map<string, TargetAvailabilityRecord>();
 
-  get(targetId: string, now = new Date()): TargetAvailabilityRecord | null {
+  get(targetId: string, _now = new Date()): TargetAvailabilityRecord | null {
     const record = this.records.get(targetId);
     if (!record) return null;
-    if (record.state === 'COOLDOWN' && record.retryAt && now.getTime() >= Date.parse(record.retryAt)) {
-      record.state = 'ELIGIBLE_TO_RETRY';
-    }
     return { ...record };
+  }
+
+  refreshEligibility(now = new Date()): void {
+    for (const record of this.records.values()) {
+      if (record.state === 'COOLDOWN' && record.retryAt && now.getTime() >= Date.parse(record.retryAt)) {
+        record.state = 'ELIGIBLE_TO_RETRY';
+      }
+    }
   }
 
   isEligible(targetId: string, now = new Date()): boolean {
     const record = this.get(targetId, now);
-    return !record || ['AVAILABLE', 'LOW', 'ELIGIBLE_TO_RETRY', 'UNKNOWN'].includes(record.state);
+    if (!record) return true;
+    if (record.state === 'COOLDOWN' && record.retryAt && now.getTime() >= Date.parse(record.retryAt)) {
+      return true;
+    }
+    return ['AVAILABLE', 'LOW', 'ELIGIBLE_TO_RETRY', 'UNKNOWN'].includes(record.state);
   }
 
   recordFailure(
