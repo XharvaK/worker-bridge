@@ -271,6 +271,7 @@ export class CursorAdapter implements WorkerAdapter {
     if (this.resolvedFlavor === 'cursor-agent') {
       args.push('-p');
       args.push('--output-format', 'text');
+      args.push('--trust');
       args.push('--workspace', worktreeCwd);
       args.push('--model', modelId || this.defaultModel);
 

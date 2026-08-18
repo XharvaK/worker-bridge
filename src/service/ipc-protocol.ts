@@ -70,6 +70,8 @@ export function parseIpcMessage<T = IpcRequest | IpcResponse>(raw: string): T {
 }
 
 // Param & Result Types for Tools
+export type TargetQualification = 'KNOWN_AVAILABLE' | 'KNOWN_UNAVAILABLE' | 'UNKNOWN';
+
 export interface ListTargetsResult {
   targets: Array<{
     targetId: string;
@@ -78,6 +80,7 @@ export interface ListTargetsResult {
     explicitOnly?: boolean;
     modelBinding?: string;
     available: boolean;
+    qualification: TargetQualification;
     reasoningStrategy?: string;
   }>;
 }

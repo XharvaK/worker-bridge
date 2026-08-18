@@ -10,22 +10,18 @@ import { MailboxTransport } from '../mailbox/transport.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { verifyBaseSha } from '../git/repo-guard.js';
 import { AdapterRegistry } from '../worker/adapter-registry.js';
-import { AntigravityAdapter } from '../worker/agy-adapter.js';
-import { OpenCodeAdapter } from '../worker/opencode-adapter.js';
-import { CodexAdapter } from '../worker/codex-adapter.js';
-import { CursorAdapter } from '../worker/cursor-adapter.js';
-import { FreebuffAdapter } from '../worker/freebuff-adapter.js';
 import { WorkerAdapterError } from '../worker/worker-adapter.js';
+import { buildAdapterRegistry } from '../worker/adapter-factory.js';
 import { ModelSelector, ResolvedWorkerSelection } from './model-selector.js';
 import { TargetAvailabilityLedger } from './target-availability-ledger.js';
 import {
-  buildRecoveryCapsule,
   parseRecoveryCapsule,
   RECOVERY_CAPSULE_MAX_BYTES,
 } from './recovery-capsule.js';
 import { roleForJob } from './job-role.js';
 import { PlanWorker } from '../worker/plan-worker.js';
 import { ImplementWorker } from '../worker/implement-worker.js';
+import { ReadOnlyExecutionKernel, ReadOnlySelectionBlocked } from './read-only-kernel.js';
 import { sendWindowsNotification } from '../utils/notifier.js';
 import { logger } from '../utils/logger.js';
 import {
@@ -54,6 +50,7 @@ export class Orchestrator {
   private availability: TargetAvailabilityLedger;
   private planWorker: PlanWorker;
   private implementWorker: ImplementWorker;
+  private kernel: ReadOnlyExecutionKernel;
   private isRunning = false;
 
   constructor(
@@ -72,28 +69,20 @@ export class Orchestrator {
     this.mailboxTransport = new MailboxTransport(cfg.mailboxRepoPath, cfg.mailboxRemote, 'main');
     this.worktreeManager = new WorktreeManager(cfg.workerRootDir);
 
-    this.adapterRegistry = customRegistry || new AdapterRegistry();
-    if (!customRegistry) {
-      const agyExe = cfg.platforms?.antigravity?.executable || cfg.agyExecutable;
-      const agyModel = cfg.platforms?.antigravity?.defaultModel || cfg.workerModel;
-      const opencodeExe = cfg.platforms?.opencode?.executable || 'opencode';
-      const opencodeModel = cfg.platforms?.opencode?.defaultModel || 'opencode/deepseek-v4-flash-free';
-      const codexExe = cfg.platforms?.codex?.executable || 'codex';
-      const cursorExe = cfg.platforms?.['cursor-cli']?.executable || cfg.platforms?.cursor?.executable || 'cursor';
-      const cursorModel = cfg.platforms?.['cursor-cli']?.defaultModel || cfg.platforms?.cursor?.defaultModel || 'grok-4.6';
-      const freebuffExe = cfg.platforms?.freebuff?.executable || 'freebuff';
-
-      this.adapterRegistry.register(new AntigravityAdapter(agyExe, agyModel, this.processManager));
-      this.adapterRegistry.register(new OpenCodeAdapter(opencodeExe, opencodeModel, this.processManager));
-      this.adapterRegistry.register(new CodexAdapter(codexExe, this.processManager));
-      this.adapterRegistry.register(new CursorAdapter(cursorExe, cursorModel, this.processManager));
-      this.adapterRegistry.register(new FreebuffAdapter(freebuffExe, this.processManager));
-    }
+    this.adapterRegistry = customRegistry || buildAdapterRegistry(cfg, this.processManager);
 
     this.modelSelector = new ModelSelector(this.adapterRegistry, cfg, this.availability);
     const defaultAdapter = this.adapterRegistry.get('antigravity') || this.adapterRegistry.getAll()[0];
     this.planWorker = new PlanWorker(this.worktreeManager, defaultAdapter);
     this.implementWorker = new ImplementWorker(this.worktreeManager, defaultAdapter);
+    this.kernel = new ReadOnlyExecutionKernel(configManager, {
+      adapterRegistry: this.adapterRegistry,
+      availability: this.availability,
+      processManager: this.processManager,
+      worktreeManager: this.worktreeManager,
+      planWorker: this.planWorker,
+      modelSelector: this.modelSelector,
+    });
   }
 
   getAdapterRegistry(): AdapterRegistry {
@@ -106,21 +95,6 @@ export class Orchestrator {
 
   private roleForSpec(spec: WorkJob): WorkerRole {
     return spec.recovery?.enabled ? 'WORKER' : spec.role || roleForJob(spec.intent);
-  }
-
-  private allowFallbackFor(spec: WorkJob): boolean {
-    const selection = spec.workerSelection;
-    if (selection?.allowFallback === false) return false;
-
-    const requestedModel = selection?.model?.trim().toLowerCase();
-    const explicitTarget = Boolean(
-      selection?.targetId || (requestedModel && !['auto', 'your call'].includes(requestedModel))
-    );
-    if (explicitTarget) return selection?.fallbackSelection !== undefined;
-    if (selection?.allowFallback === true) return true;
-
-    const policy = this.configManager.getConfig().selectionPolicy;
-    return policy?.allowFallbackByDefault === true || !requestedModel || ['auto', 'your call'].includes(requestedModel);
   }
 
   private async readRecoveryCapsule(spec: WorkJob): Promise<RecoveryCapsule | undefined> {
@@ -159,76 +133,6 @@ export class Orchestrator {
       return undefined;
     }
   }
-
-  private buildPlanRecoveryCapsule(
-    spec: WorkJob,
-    role: WorkerRole,
-    selection: ResolvedWorkerSelection,
-    result: PlanResult,
-    originalGoal: string
-  ): RecoveryCapsule {
-    const evidence: WorkerEvidence = result.evidence || {
-      stdout: result.planText,
-      stderr: result.error || '',
-      partialResponse: result.planText,
-      outputTruncated: false,
-      sessionId: result.sessionId,
-    };
-    return buildRecoveryCapsule({
-      contract: {
-        jobId: spec.jobId,
-        round: spec.round,
-        revision: spec.revision,
-        role,
-        originalGoal,
-        acceptedPlan: '',
-        solReview: '',
-        ownerApproval: spec.ownerApproval,
-        baseSha: spec.baseSha,
-        executionMode: 'READ_ONLY',
-        executionConstraints: ['READ_ONLY mode must not modify source files.', 'Use a fresh destination session for fallback.'],
-      },
-      sourceWorker: {
-        targetId: selection.targetId,
-        platform: result.platform,
-        model: result.model,
-        reasoning: result.sessionIdentity?.reasoning || result.variant,
-        sessionId: result.sessionIdentity?.sessionId || result.sessionId,
-        requestPrompt: '',
-        failureClass: result.failureClass,
-        retryAt: result.retryAt,
-      },
-      capturedHistory: evidence,
-      currentState: {
-        worktreePath: result.worktreePath || 'not-preserved-read-only-worktree',
-        baseSha: spec.baseSha,
-        headSha: spec.baseSha,
-        gitStatus: result.mutatedFiles.join('\n'),
-        gitDiff: '',
-        gitDiffStat: '',
-        diffCheck: 'not-run',
-        filesChanged: result.mutatedFiles,
-        bridgeVerification: { readOnly: result.clean ? 'passed' : 'failed' },
-        incompleteOperations: ['read-only worker attempt did not complete'],
-      },
-      recoveryDirective: {
-        provenComplete: ['target selection and bounded worker evidence were captured'],
-        appearsIncomplete: ['requested read-only investigation and plan'],
-        knownFailures: [result.failureClass || 'PROCESS_FAILED'],
-        remainingWork: ['retry the role with the next eligible target'],
-        mustNotRepeatBlindly: ['retry the failed target before its authoritative retryAt'],
-        instruction: 'START A FRESH READ-ONLY RECOVERY ATTEMPT USING THIS CAPSULE.',
-      },
-    });
-  }
-
-  private recordTargetFailure(selection: ResolvedWorkerSelection, failureClass: PlanResult['failureClass'] | undefined, retryAt?: string, rawEvidence?: string): void {
-    if (!failureClass) return;
-    const target = this.modelSelector.getTargetConfig(selection.targetId);
-    if (!target) return;
-    this.availability.recordFailure(target, failureClass, new Date().toISOString(), retryAt, rawEvidence, 'worker_result');
-  }
-
   private sessionIdentityFromRecord(record: ReturnType<Ledger['getJobRecord']>): WorkerSessionIdentity | undefined {
     if (!record?.platform || !record.model || !record.worktreePath) return undefined;
     return {
@@ -240,6 +144,37 @@ export class Orchestrator {
       worktreeCwd: record.worktreePath,
       executionMode: record.lastHandledMode,
     };
+  }
+
+  // WORKTREE_WRITE-domain helpers. The READ_ONLY equivalents live in the
+  // shared ReadOnlyExecutionKernel; write-domain execution stays in the
+  // orchestrator until the M2 write kernel milestone.
+
+  private allowFallbackForWrite(spec: WorkJob): boolean {
+    const selection = spec.workerSelection;
+    if (selection?.allowFallback === false) return false;
+
+    const requestedModel = selection?.model?.trim().toLowerCase();
+    const explicitTarget = Boolean(
+      selection?.targetId || (requestedModel && !['auto', 'your call'].includes(requestedModel))
+    );
+    if (explicitTarget) return selection?.fallbackSelection !== undefined;
+    if (selection?.allowFallback === true) return true;
+
+    const policy = this.configManager.getConfig().selectionPolicy;
+    return policy?.allowFallbackByDefault === true || !requestedModel || ['auto', 'your call'].includes(requestedModel);
+  }
+
+  private recordWriteTargetFailure(
+    selection: ResolvedWorkerSelection,
+    failureClass: PlanResult['failureClass'],
+    retryAt?: string,
+    rawEvidence?: string
+  ): void {
+    if (!failureClass) return;
+    const target = this.modelSelector.getTargetConfig(selection.targetId);
+    if (!target) return;
+    this.availability.recordFailure(target, failureClass, new Date().toISOString(), retryAt, rawEvidence, 'worker_result');
   }
 
   private async getCompatibleRecoveryWorktree(
@@ -272,85 +207,22 @@ export class Orchestrator {
     }
   }
 
-  private buildPreInvocationFailureCapsule(
-    spec: WorkJob,
-    role: WorkerRole,
-    selection: ResolvedWorkerSelection | undefined,
-    previous: ReturnType<Ledger['getJobRecord']>,
-    failureClass: PlanResult['failureClass'],
-    message: string,
-  ): RecoveryCapsule {
-    const worktreePath = previous?.worktreePath || (
-      spec.executionMode === 'WORKTREE_WRITE'
-        ? this.worktreeManager.getImplementWorktreePath(spec.projectId, spec.jobId)
-        : this.worktreeManager.getPlanWorktreePath(spec.projectId, spec.jobId)
-    );
-    return buildRecoveryCapsule({
-      contract: {
-        jobId: spec.jobId,
-        round: spec.round,
-        revision: spec.revision,
-        role,
-        originalGoal: '',
-        acceptedPlan: '',
-        solReview: '',
-        ownerApproval: spec.ownerApproval,
-        baseSha: spec.baseSha,
-        executionMode: spec.executionMode,
-        executionConstraints: ['No worker invocation occurred after the bridge failed closed.'],
-      },
-      sourceWorker: {
-        targetId: selection?.targetId || previous?.targetId,
-        platform: selection?.platform || previous?.platform || 'unknown',
-        model: selection?.modelId || previous?.model || spec.workerSelection?.model || 'unknown',
-        reasoning: selection?.variant || previous?.reasoning || spec.workerSelection?.reasoning?.value,
-        sessionId: previous?.platformSessionId || undefined,
-        failureClass,
-      },
-      capturedHistory: {
-        stdout: '',
-        stderr: message,
-        partialResponse: '',
-        outputTruncated: false,
-        sessionId: previous?.platformSessionId || undefined,
-      },
-      currentState: {
-        worktreePath,
-        branch: previous?.workerBranch || undefined,
-        baseSha: spec.baseSha,
-        headSha: previous?.currentHeadSha || spec.baseSha,
-        gitStatus: 'not-captured',
-        gitDiff: '',
-        gitDiffStat: '',
-        diffCheck: 'not-run',
-        filesChanged: [],
-        bridgeVerification: { preInvocation: 'failed' },
-        incompleteOperations: ['worker invocation was refused before execution'],
-      },
-      recoveryDirective: {
-        provenComplete: ['the bridge preserved the exact requested failure identity'],
-        appearsIncomplete: ['worker invocation'],
-        knownFailures: [failureClass || 'PROCESS_FAILED'],
-        remainingWork: ['resolve the exact target/session/authority identity explicitly'],
-        mustNotRepeatBlindly: ['substitute a different target, model, reasoning profile, or session'],
-        instruction: 'PRESERVE EXACT FAILURE EVIDENCE. DO NOT SILENTLY SUBSTITUTE A WORKER.',
-      },
-    });
-  }
-
   private async publishPreInvocationFailure(
     spec: WorkJob,
     role: WorkerRole,
-    selection: ResolvedWorkerSelection | undefined,
     previous: ReturnType<Ledger['getJobRecord']>,
-    failureClass: PlanResult['failureClass'],
-    message: string,
+    blocked: ReadOnlySelectionBlocked,
   ): Promise<void> {
-    const capsule = this.buildPreInvocationFailureCapsule(spec, role, selection, previous, failureClass, message);
-    const capsulePath = await this.mailboxSyncer.writeRecoveryCapsule(spec.jobId, spec.round, capsule);
+    if (!blocked.capsule) {
+      logger.warn(`No recovery capsule available for blocked job ${spec.jobId}; publishing BLOCKED status only.`);
+    }
+    const capsule = blocked.capsule;
+    const capsulePath = capsule
+      ? await this.mailboxSyncer.writeRecoveryCapsule(spec.jobId, spec.round, capsule)
+      : undefined;
     if (previous) {
       this.ledger.updateJobEvidence(spec.jobId, {
-        recoveryCapsulePath: capsulePath,
+        recoveryCapsulePath: capsulePath || null,
         currentHeadSha: previous.currentHeadSha || spec.baseSha,
       });
       this.ledger.recordFinish(spec.jobId, 'BLOCKED', previous.platformSessionId);
@@ -365,20 +237,9 @@ export class Orchestrator {
       state: 'BLOCKED',
       updatedAt: new Date().toISOString(),
       baseSha: spec.baseSha,
-      currentWorker: selection
-        ? {
-            targetId: selection.targetId,
-            platform: selection.platform,
-            model: selection.modelId,
-            variant: selection.variant,
-            reasoning: selection.variant,
-            platformSessionId: previous?.platformSessionId || undefined,
-            worktreeCwd: capsule.currentState.worktreePath,
-            executionMode: spec.executionMode,
-          }
-        : null,
+      currentWorker: null,
       recoveryCapsulePath: capsulePath,
-      error: message,
+      error: blocked.message,
     };
     await this.mailboxSyncer.writeJobStatus(spec.jobId, status);
     await this.mailboxTransport.stageAndCommitJobArtifacts(spec.jobId, `worker(${spec.jobId}): publish pre-invocation failure`);
@@ -555,7 +416,7 @@ export class Orchestrator {
           } catch {}
         }
 
-        await this.processManager.cancelJob(jobId);
+        await this.kernel.cancelActiveExecution(jobId);
         this.ledger.recordFinish(jobId, 'CANCELLED');
 
         const status: JobStatus = {
@@ -611,122 +472,136 @@ export class Orchestrator {
         }
       }
 
-      // 8. Resolve Worker Platform and Model Selection
+      // 8. Resolve Worker Platform and Model Selection. READ_ONLY selection is
+      // delegated to the shared execution kernel (step 10); WORKTREE_WRITE
+      // keeps its write-domain selection path here.
       const role = this.roleForSpec(spec);
       const prevRecord = this.ledger.getJobRecord(jobId);
       const recoveryCapsule = await this.readRecoveryCapsule(spec);
-      const automaticReviewerAvoidance =
-        role === 'REVIEWER' && this.configManager.getConfig().selectionPolicy?.reviewerPreferDifferentTarget
-          ? spec.workerSelection?.avoidTargetId || prevRecord?.targetId
-          : spec.workerSelection?.avoidTargetId;
-      let resolvedWorker: ResolvedWorkerSelection;
       const previousSessionIdentity = this.sessionIdentityFromRecord(prevRecord);
-      try {
-        const requestedSelection =
-          spec.sessionPolicy === 'CONTINUE' &&
-          prevRecord?.targetId &&
-          (!spec.workerSelection?.targetId &&
-            (!spec.workerSelection?.model || ['auto', 'your call'].includes(spec.workerSelection.model.toLowerCase())))
-            ? {
-                targetId: prevRecord.targetId,
-                platform: prevRecord.platform,
-                model: prevRecord.model,
-                reasoning: prevRecord.reasoning
-                  ? { strategy: 'explicit' as const, value: prevRecord.reasoning }
-                  : undefined,
-              }
-            : spec.sessionPolicy === 'CONTINUE' &&
-                prevRecord?.targetId &&
-                spec.workerSelection?.targetId === prevRecord.targetId &&
-                !spec.workerSelection.model &&
-                !!prevRecord.model
-              ? {
-                  ...spec.workerSelection,
-                  platform: spec.workerSelection.platform || prevRecord.platform,
-                  model: prevRecord.model,
-                  reasoning: spec.workerSelection.reasoning || (prevRecord.reasoning
-                    ? { strategy: 'explicit' as const, value: prevRecord.reasoning }
-                    : undefined),
-                }
-              : spec.workerSelection;
-        if (requestedSelection?.targetId && spec.sessionPolicy === 'CONTINUE' && prevRecord?.targetId === requestedSelection.targetId) {
-          if (!this.availability.isEligible(requestedSelection.targetId)) {
-            throw new Error(`MODEL_SELECTION_ERROR: CONTINUE target "${requestedSelection.targetId}" is unavailable.`);
-          }
-        }
-        resolvedWorker = await this.modelSelector.resolveSelection(
-          requestedSelection,
-          role,
-          new Set<string>(),
-          automaticReviewerAvoidance
-        );
-      } catch (err: any) {
-        logger.warn(`Model resolution failed for job ${jobId}: ${err.message}`);
-        if (err instanceof WorkerAdapterError) {
-          await this.publishPreInvocationFailure(spec, role, undefined, prevRecord, err.failureClass, err.message);
-          continue;
-        }
-        const status: JobStatus = {
-          schemaVersion: spec.schemaVersion || 2,
-          jobId,
-          projectId: spec.projectId,
-          observedRound: spec.round,
-          observedRevision: spec.revision,
-          observedPhase: spec.requestedPhase || (spec.executionMode === 'READ_ONLY' ? 'PLAN' : 'IMPLEMENT'),
-          state: 'BLOCKED',
-          updatedAt: new Date().toISOString(),
-          baseSha: spec.baseSha,
-          error: err.message,
-        };
-        await this.mailboxSyncer.writeJobStatus(jobId, status);
-        await this.mailboxTransport.stageAndCommitJobArtifacts(
-          jobId,
-          `worker(${jobId}): mark BLOCKED (model resolution error)`
-        );
-        await this.mailboxTransport.pushWithRetry();
-        continue;
-      }
-
-      const adapter = this.adapterRegistry.get(resolvedWorker.platform);
-      if (!adapter) {
-        logger.error(`Adapter for platform "${resolvedWorker.platform}" not found`);
-        continue;
-      }
-
-      // 9. Session Policy Management
+      let resolvedWorker: ResolvedWorkerSelection | undefined;
       let sessionIdToUse: string | undefined;
       let sessionIdentityToUse: WorkerSessionIdentity | undefined;
-      const recoveryWorktreeCwd = await this.getCompatibleRecoveryWorktree(spec, prevRecord, recoveryCapsule);
-      const continuationWorktreeCwd = spec.sessionPolicy === 'CONTINUE' ? recoveryWorktreeCwd : undefined;
+      let adapter: ReturnType<AdapterRegistry['get']> | undefined;
+      let recoveryWorktreeCwd: string | undefined;
+      let automaticReviewerAvoidance: string | undefined;
 
-      if (spec.sessionPolicy === 'CONTINUE' && !prevRecord?.platformSessionId) {
-        await this.publishPreInvocationFailure(
-          spec,
-          role,
-          resolvedWorker,
-          prevRecord,
-          'SESSION_ID_UNAVAILABLE',
-          'SESSION_ID_UNAVAILABLE: CONTINUE requires an exact persisted platform session ID; no worker was invoked.',
-        );
-        continue;
-      }
+      if (spec.executionMode === 'WORKTREE_WRITE') {
+        automaticReviewerAvoidance =
+          role === 'REVIEWER' && this.configManager.getConfig().selectionPolicy?.reviewerPreferDifferentTarget
+            ? spec.workerSelection?.avoidTargetId || prevRecord?.targetId
+            : spec.workerSelection?.avoidTargetId;
+        try {
+          const requestedSelection =
+            spec.sessionPolicy === 'CONTINUE' &&
+            prevRecord?.targetId &&
+            (!spec.workerSelection?.targetId &&
+              (!spec.workerSelection?.model || ['auto', 'your call'].includes(spec.workerSelection.model.toLowerCase())))
+              ? {
+                  targetId: prevRecord.targetId,
+                  platform: prevRecord.platform,
+                  model: prevRecord.model,
+                  reasoning: prevRecord.reasoning
+                    ? { strategy: 'explicit' as const, value: prevRecord.reasoning }
+                    : undefined,
+                }
+              : spec.sessionPolicy === 'CONTINUE' &&
+                  prevRecord?.targetId &&
+                  spec.workerSelection?.targetId === prevRecord.targetId &&
+                  !spec.workerSelection.model &&
+                  !!prevRecord.model
+                ? {
+                    ...spec.workerSelection,
+                    platform: spec.workerSelection.platform || prevRecord.platform,
+                    model: prevRecord.model,
+                    reasoning: spec.workerSelection.reasoning || (prevRecord.reasoning
+                      ? { strategy: 'explicit' as const, value: prevRecord.reasoning }
+                      : undefined),
+                  }
+                : spec.workerSelection;
+          if (requestedSelection?.targetId && spec.sessionPolicy === 'CONTINUE' && prevRecord?.targetId === requestedSelection.targetId) {
+            if (!this.availability.isEligible(requestedSelection.targetId)) {
+              throw new Error(`MODEL_SELECTION_ERROR: CONTINUE target "${requestedSelection.targetId}" is unavailable.`);
+            }
+          }
+          resolvedWorker = await this.modelSelector.resolveSelection(
+            requestedSelection,
+            role,
+            new Set<string>(),
+            automaticReviewerAvoidance
+          );
+        } catch (err: any) {
+          logger.warn(`Model resolution failed for job ${jobId}: ${err.message}`);
+          if (err instanceof WorkerAdapterError) {
+            await this.publishPreInvocationFailure(
+              spec,
+              role,
+              prevRecord,
+              new ReadOnlySelectionBlocked(err.failureClass, err.message)
+            );
+            continue;
+          }
+          const status: JobStatus = {
+            schemaVersion: spec.schemaVersion || 2,
+            jobId,
+            projectId: spec.projectId,
+            observedRound: spec.round,
+            observedRevision: spec.revision,
+            observedPhase: spec.requestedPhase || 'IMPLEMENT',
+            state: 'BLOCKED',
+            updatedAt: new Date().toISOString(),
+            baseSha: spec.baseSha,
+            error: err.message,
+          };
+          await this.mailboxSyncer.writeJobStatus(jobId, status);
+          await this.mailboxTransport.stageAndCommitJobArtifacts(
+            jobId,
+            `worker(${jobId}): mark BLOCKED (model resolution error)`
+          );
+          await this.mailboxTransport.pushWithRetry();
+          continue;
+        }
 
-      if (
-        spec.sessionPolicy === 'CONTINUE' &&
-        prevRecord?.platformSessionId &&
-        previousSessionIdentity &&
-        this.modelSelector.canContinueSession(
-          previousSessionIdentity,
-          resolvedWorker,
-          spec.executionMode,
-          continuationWorktreeCwd || '',
-        )
-      ) {
-        sessionIdToUse = prevRecord.platformSessionId;
-        sessionIdentityToUse = previousSessionIdentity;
-        logger.info(`Continuing existing ${resolvedWorker.platform} session: ${sessionIdToUse}`);
-      } else {
-        logger.info(`Starting FRESH ${resolvedWorker.platform} session for job ${jobId}`);
+        adapter = this.adapterRegistry.get(resolvedWorker.platform);
+        if (!adapter) {
+          logger.error(`Adapter for platform "${resolvedWorker.platform}" not found`);
+          continue;
+        }
+
+        // 9. Session Policy Management (WORKTREE_WRITE path)
+        recoveryWorktreeCwd = await this.getCompatibleRecoveryWorktree(spec, prevRecord, recoveryCapsule);
+        const continuationWorktreeCwd = spec.sessionPolicy === 'CONTINUE' ? recoveryWorktreeCwd : undefined;
+
+        if (spec.sessionPolicy === 'CONTINUE' && !prevRecord?.platformSessionId) {
+          await this.publishPreInvocationFailure(
+            spec,
+            role,
+            prevRecord,
+            new ReadOnlySelectionBlocked(
+              'SESSION_ID_UNAVAILABLE',
+              'SESSION_ID_UNAVAILABLE: CONTINUE requires an exact persisted platform session ID; no worker was invoked.'
+            )
+          );
+          continue;
+        }
+
+        if (
+          spec.sessionPolicy === 'CONTINUE' &&
+          prevRecord?.platformSessionId &&
+          previousSessionIdentity &&
+          this.modelSelector.canContinueSession(
+            previousSessionIdentity,
+            resolvedWorker,
+            spec.executionMode,
+            continuationWorktreeCwd || '',
+          )
+        ) {
+          sessionIdToUse = prevRecord.platformSessionId;
+          sessionIdentityToUse = previousSessionIdentity;
+          logger.info(`Continuing existing ${resolvedWorker.platform} session: ${sessionIdToUse}`);
+        } else {
+          logger.info(`Starting FRESH ${resolvedWorker.platform} session for job ${jobId}`);
+        }
       }
 
       // 10. Handle READ_ONLY Mode (plan, design, investigate, review, audit)
@@ -755,6 +630,53 @@ export class Orchestrator {
           continue;
         }
 
+        // 8b. Resolve through the shared READ_ONLY execution kernel
+        let resolved: Awaited<ReturnType<ReadOnlyExecutionKernel['resolve']>>;
+        try {
+          resolved = await this.kernel.resolve({
+            jobId,
+            projectId: spec.projectId,
+            projectPath: projConfig.path,
+            intent: spec.intent,
+            goal: goalText,
+            role: spec.role,
+            baseSha: spec.baseSha,
+            timeoutSeconds: spec.timeoutSeconds,
+            workerSelection: spec.workerSelection,
+            sessionPolicy: spec.sessionPolicy,
+            previousSession: previousSessionIdentity,
+            recoveryCapsule,
+            round: spec.round,
+            revision: spec.revision,
+          });
+        } catch (err) {
+          if (err instanceof ReadOnlySelectionBlocked) {
+            logger.warn(`Model resolution failed for job ${jobId}: ${err.message}`);
+            await this.publishPreInvocationFailure(spec, role, prevRecord, err);
+          } else {
+            logger.warn(`Read-only resolution failed for job ${jobId}: ${String(err)}`);
+            const status: JobStatus = {
+              schemaVersion: spec.schemaVersion || 2,
+              jobId,
+              projectId: spec.projectId,
+              observedRound: spec.round,
+              observedRevision: spec.revision,
+              observedPhase: spec.requestedPhase || 'PLAN',
+              state: 'BLOCKED',
+              updatedAt: new Date().toISOString(),
+              baseSha: spec.baseSha,
+              error: String(err instanceof Error ? err.message : err),
+            };
+            await this.mailboxSyncer.writeJobStatus(jobId, status);
+            await this.mailboxTransport.stageAndCommitJobArtifacts(
+              jobId,
+              `worker(${jobId}): mark BLOCKED (model resolution error)`
+            );
+            await this.mailboxTransport.pushWithRetry();
+          }
+          continue;
+        }
+
         // Mark PLANNING / WORKER_RUNNING state
         const planWorktree = this.worktreeManager.getPlanWorktreePath(spec.projectId, jobId);
         const runningStatus: JobStatus = {
@@ -768,16 +690,16 @@ export class Orchestrator {
           updatedAt: new Date().toISOString(),
           baseSha: spec.baseSha,
           currentWorker: {
-            targetId: resolvedWorker.targetId,
-            platform: resolvedWorker.platform,
-            model: resolvedWorker.modelId,
-            variant: resolvedWorker.variant,
-            reasoning: resolvedWorker.variant,
-            platformSessionId: sessionIdToUse,
+            targetId: resolved.selection.targetId,
+            platform: resolved.selection.platform,
+            model: resolved.selection.modelId,
+            variant: resolved.selection.variant,
+            reasoning: resolved.selection.variant,
+            platformSessionId: resolved.sessionIdToUse,
             worktreeCwd: planWorktree,
             executionMode: 'READ_ONLY',
           },
-          summary: `Worker on ${resolvedWorker.platform} (${resolvedWorker.modelId}) is executing read-only investigation and generating plan...`,
+          summary: `Worker on ${resolved.selection.platform} (${resolved.selection.modelId}) is executing read-only investigation and generating plan...`,
         };
         await this.mailboxSyncer.writeJobStatus(jobId, runningStatus);
         await this.mailboxTransport.stageAndCommitJobArtifacts(jobId, `worker(${jobId}): mark WORKER_RUNNING`);
@@ -791,103 +713,54 @@ export class Orchestrator {
           spec.round,
           spec.revision,
           null,
-          resolvedWorker.platform,
-          resolvedWorker.modelId,
+          resolved.selection.platform,
+          resolved.selection.modelId,
           planWorktree,
           null,
-          sessionIdToUse,
-          resolvedWorker.targetId,
+          resolved.sessionIdToUse,
+          resolved.selection.targetId,
           role,
           false,
           undefined,
           spec.baseSha,
-          resolvedWorker.variant
+          resolved.selection.variant
         );
 
-        // Execute READ_ONLY worker with fallback handling if quota exhausted
-        let currentWorkerSelection = resolvedWorker;
-        let currentAdapter = adapter;
-        let planRes = await this.planWorker.execute(
-          jobId,
-          spec.projectId,
-          projConfig.path,
-          spec.baseSha,
-          goalText,
-          spec.timeoutSeconds,
-          currentAdapter,
-          currentWorkerSelection.modelId,
-          currentWorkerSelection.variant,
-          sessionIdToUse,
-          spec.round,
-          recoveryCapsule,
-          currentWorkerSelection.targetId,
-          sessionIdentityToUse
+        // Execute through the shared READ_ONLY kernel (PlanWorker invocation,
+        // bounded fallback, availability recording, read-only verification).
+        const outcome = await this.kernel.execute(
+          {
+            jobId,
+            projectId: spec.projectId,
+            projectPath: projConfig.path,
+            intent: spec.intent,
+            goal: goalText,
+            role: spec.role,
+            baseSha: spec.baseSha,
+            timeoutSeconds: spec.timeoutSeconds,
+            workerSelection: spec.workerSelection,
+            sessionPolicy: spec.sessionPolicy,
+            previousSession: previousSessionIdentity,
+            recoveryCapsule,
+            round: spec.round,
+            revision: spec.revision,
+          },
+          resolved
         );
-        planRes = { ...planRes, targetId: currentWorkerSelection.targetId };
+        const planRes = outcome.planResult;
 
-        const allowFallback = this.allowFallbackFor(spec);
-
-        const failedTargetIds = new Set<string>();
-        let attempts = 0;
-        const maxFallbackAttempts = this.configManager.getConfig().selectionPolicy?.maxFallbackAttempts ?? 3;
-
-        while (
-          (planRes.failureClass === 'QUOTA_EXHAUSTED' || planRes.failureClass === 'RATE_LIMITED') &&
-          allowFallback &&
-          attempts < maxFallbackAttempts
-        ) {
-          attempts++;
-          failedTargetIds.add(currentWorkerSelection.targetId);
-          this.recordTargetFailure(currentWorkerSelection, planRes.failureClass, planRes.retryAt, planRes.rawFailureEvidence);
-          const failedCapsule = this.buildPlanRecoveryCapsule(spec, role, currentWorkerSelection, planRes, goalText);
-          planRes = { ...planRes, recoveryEvidence: failedCapsule };
-          await this.mailboxSyncer.writeRecoveryCapsule(jobId, spec.round, failedCapsule);
-          logger.warn(
-            `Worker ${currentWorkerSelection.targetId} failed with ${planRes.failureClass}. Attempting fallback (attempt ${attempts}/${maxFallbackAttempts})...`
-          );
-
-          try {
-            currentWorkerSelection = await this.modelSelector.getNextFallback(
-              currentWorkerSelection,
-              role,
-              {
-                failedTargetIds,
-                authorizedFallback: spec.workerSelection?.fallbackSelection,
-              }
-            );
-            currentAdapter = this.adapterRegistry.get(currentWorkerSelection.platform)!;
-
-            planRes = await this.planWorker.execute(
-              jobId,
-              spec.projectId,
-              projConfig.path,
-              spec.baseSha,
-              goalText,
-              spec.timeoutSeconds,
-              currentAdapter,
-              currentWorkerSelection.modelId,
-              currentWorkerSelection.variant,
-              undefined, // Fresh session on fallback
-              spec.round,
-              recoveryCapsule,
-              currentWorkerSelection.targetId
-            );
-            planRes = { ...planRes, targetId: currentWorkerSelection.targetId };
-          } catch {
-            break;
-          }
-        }
-
-        if (planRes.clean && planRes.exitCode === 0) {
-          const successfulTarget = this.modelSelector.getTargetConfig(currentWorkerSelection.targetId);
-          this.availability.recordSuccess(currentWorkerSelection.targetId, successfulTarget);
+        if (outcome.terminalState === 'WORKER_RETURNED') {
           await this.mailboxSyncer.writeJobPlan(jobId, planRes.planText, spec.round);
+          if (outcome.recoveryCapsule) {
+            const capsulePath = await this.mailboxSyncer.writeRecoveryCapsule(jobId, spec.round, outcome.recoveryCapsule);
+            this.ledger.updateJobEvidence(jobId, { recoveryCapsulePath: capsulePath });
+          }
           this.ledger.updateJobEvidence(jobId, {
             platform: planRes.platform,
             model: planRes.model,
             reasoning: planRes.sessionIdentity?.reasoning || planRes.variant,
             platformSessionId: planRes.sessionIdentity?.sessionId || planRes.sessionId || null,
-            targetId: currentWorkerSelection.targetId,
+            targetId: outcome.selectedTarget.targetId,
             role,
             currentHeadSha: spec.baseSha,
           });
@@ -908,7 +781,7 @@ export class Orchestrator {
             updatedAt: new Date().toISOString(),
             baseSha: spec.baseSha,
             currentWorker: {
-              targetId: currentWorkerSelection.targetId,
+              targetId: outcome.selectedTarget.targetId,
               platform: planRes.platform,
               model: planRes.model,
               variant: planRes.variant,
@@ -931,17 +804,14 @@ export class Orchestrator {
             `Plan for ${jobId} (${spec.projectId}) by ${planRes.platform} is ready for Sol review.`
           );
         } else {
-          if (planRes.failureClass === 'QUOTA_EXHAUSTED' || planRes.failureClass === 'RATE_LIMITED') {
-            this.recordTargetFailure(currentWorkerSelection, planRes.failureClass, planRes.retryAt, planRes.rawFailureEvidence);
-            const failedCapsule =
-              planRes.recoveryEvidence || this.buildPlanRecoveryCapsule(spec, role, currentWorkerSelection, planRes, goalText);
-            const capsulePath = await this.mailboxSyncer.writeRecoveryCapsule(jobId, spec.round, failedCapsule);
+          if (outcome.recoveryCapsule) {
+            const capsulePath = await this.mailboxSyncer.writeRecoveryCapsule(jobId, spec.round, outcome.recoveryCapsule);
             this.ledger.updateJobEvidence(jobId, {
               platform: planRes.platform,
               model: planRes.model,
               reasoning: planRes.sessionIdentity?.reasoning || planRes.variant,
               platformSessionId: planRes.sessionIdentity?.sessionId || planRes.sessionId || null,
-              targetId: currentWorkerSelection.targetId,
+              targetId: outcome.selectedTarget.targetId,
               role,
               recoveryCapsulePath: capsulePath,
               currentHeadSha: spec.baseSha,
@@ -959,7 +829,7 @@ export class Orchestrator {
             updatedAt: new Date().toISOString(),
             baseSha: spec.baseSha,
             currentWorker: {
-              targetId: currentWorkerSelection.targetId,
+              targetId: outcome.selectedTarget.targetId,
               platform: planRes.platform,
               model: planRes.model,
               variant: planRes.variant,
@@ -1016,6 +886,10 @@ export class Orchestrator {
         }
 
         // Mark IMPLEMENTING / WORKER_RUNNING state
+        if (!resolvedWorker || !adapter) {
+          logger.error(`Worker selection unavailable for job ${jobId}; cannot execute WORKTREE_WRITE.`);
+          continue;
+        }
         const preservedWorktreePath = spec.recovery?.enabled ? recoveryWorktreeCwd : undefined;
         const impWorktree = preservedWorktreePath || this.worktreeManager.getImplementWorktreePath(spec.projectId, jobId);
         const impStatus: JobStatus = {
@@ -1094,7 +968,7 @@ export class Orchestrator {
         );
         impRes = { ...impRes, targetId: currentWorkerSelection.targetId };
 
-        const allowFallback = this.allowFallbackFor(spec);
+        const allowFallback = this.allowFallbackForWrite(spec);
         const failedTargetIds = new Set<string>();
         let attempts = 0;
         const maxFallbackAttempts = cfg.selectionPolicy?.maxFallbackAttempts ?? 3;
@@ -1106,7 +980,7 @@ export class Orchestrator {
         ) {
           attempts++;
           failedTargetIds.add(currentWorkerSelection.targetId);
-          this.recordTargetFailure(currentWorkerSelection, impRes.failureClass, impRes.retryAt, impRes.rawFailureEvidence);
+          this.recordWriteTargetFailure(currentWorkerSelection, impRes.failureClass, impRes.retryAt, impRes.rawFailureEvidence);
           if (impRes.recoveryEvidence) {
             await this.mailboxSyncer.writeRecoveryCapsule(jobId, spec.round, impRes.recoveryEvidence);
           }
@@ -1219,7 +1093,7 @@ export class Orchestrator {
           );
         } else {
           if (impRes.failureClass === 'QUOTA_EXHAUSTED' || impRes.failureClass === 'RATE_LIMITED') {
-            this.recordTargetFailure(currentWorkerSelection, impRes.failureClass, impRes.retryAt, impRes.rawFailureEvidence);
+            this.recordWriteTargetFailure(currentWorkerSelection, impRes.failureClass, impRes.retryAt, impRes.rawFailureEvidence);
           }
           const interruptedWithSourceState = impRes.sourceEffectsPresent === true;
           this.ledger.updateJobEvidence(jobId, {

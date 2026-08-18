@@ -36,6 +36,10 @@ export interface StoredJobRecord {
   approvedBy?: string;
   approvedAt?: string;
   approvalSource?: string;
+  targetId?: string;
+  platform?: string;
+  model?: string;
+  reasoning?: string;
   resultText?: string;
   summary?: string;
   verification?: string;
@@ -272,6 +276,10 @@ export class JobManager {
     };
   }
 
+  getJobRecord(jobId: string): StoredJobRecord | undefined {
+    return this.jobs.get(jobId);
+  }
+
   getJob(jobId: string): GetJobResult {
     const job = this.jobs.get(jobId);
     if (!job) {
@@ -287,10 +295,10 @@ export class JobManager {
       state: job.state,
       executionMode: job.executionMode,
       intent: job.intent,
-      target: job.workerSelection?.targetId,
-      platform: job.workerSelection?.platform,
-      model: job.workerSelection?.model,
-      reasoning: reasoningStr,
+      target: job.targetId || job.workerSelection?.targetId,
+      platform: job.platform || job.workerSelection?.platform,
+      model: job.model || job.workerSelection?.model,
+      reasoning: job.reasoning || reasoningStr,
       summary: job.summary,
       verification: job.verification,
       changedFiles: job.changedFiles,

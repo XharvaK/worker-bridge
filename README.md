@@ -149,6 +149,16 @@ Worker Bridge maintains a strict separation between **selection policy** (which 
 
 ## Running Worker Bridge
 
+### Runtime Architecture: transports are thin, execution is shared
+
+The READ_ONLY execution path (role derivation, target selection with fallback, worker invocation, mechanical read-only verification, recovery capsules) is implemented exactly once in the **execution kernel** (`src/engine/read-only-kernel.ts`). Transports do not reimplement it:
+
+- `serve` (durable IPC service) owns durable job records, a single-flight serial queue, cancellation, and target availability state; it delegates all READ_ONLY execution to the kernel.
+- `start` (mailbox daemon) publishes execution outcomes into the mailbox ledger and coordinates review checkpoints; its READ_ONLY branch is kernel-driven as well.
+- `WORKTREE_WRITE` execution remains in the orchestrator until the write path is unified; the kernel and transport boundaries are documented in code so that unification does not duplicate fallback or verification behavior.
+
+Cancellation, process tracking, and process-tree termination share one `ProcessManager` per service — adapters and the kernel never spawn processes outside it.
+
 ### Mode A: Durable Background Service + MCP Interfaces
 
 1. **Start the durable background service**:

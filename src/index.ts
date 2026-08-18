@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 import { ConfigManager } from './config.js';
-import { Orchestrator } from './engine/orchestrator.js';
-import { Ledger } from './engine/ledger.js';
 import { logger } from './utils/logger.js';
 
 function parseCliArgs() {
@@ -34,8 +32,6 @@ async function main() {
     console.error(`Configuration Error: ${err.message}`);
     process.exit(1);
   }
-
-  const orchestrator = new Orchestrator(configManager);
 
   if (command === 'serve') {
     const { DurableService } = await import('./service/durable-service.js');
@@ -76,6 +72,8 @@ async function main() {
       process.exit(1);
     }
   } else if (command === 'start') {
+    const { Orchestrator } = await import('./engine/orchestrator.js');
+    const orchestrator = new Orchestrator(configManager);
     logger.info('Starting Worker Bridge daemon (Antigravity, OpenCode, and explicit-only Codex)...');
 
     const shutdown = () => {
@@ -89,21 +87,28 @@ async function main() {
 
     await orchestrator.startLoop();
   } else if (command === 'run-once') {
+    const { Orchestrator } = await import('./engine/orchestrator.js');
+    const orchestrator = new Orchestrator(configManager);
     logger.info('Running single polling tick...');
     await orchestrator.init();
     await orchestrator.tick();
     logger.info('Tick finished.');
     process.exit(0);
   } else if (command === 'status') {
+    const { Ledger } = await import('./engine/ledger.js');
+    const { buildAdapterRegistry } = await import('./worker/adapter-factory.js');
+    const { ProcessManager } = await import('./engine/process-manager.js');
     const ledger = new Ledger();
+    const registry = buildAdapterRegistry(configManager.getConfig(), new ProcessManager());
     console.log('\n=== Worker Bridge Status ===');
     console.log(`Config Mailbox: ${configManager.getConfig().mailboxRepoPath}`);
-    console.log(`Platforms:      ${orchestrator.getAdapterRegistry().listPlatforms().join(', ')}`);
+    console.log(`Platforms:      ${registry.listPlatforms().join(', ')}`);
     console.log(`Allowed Projects: ${Object.keys(configManager.getConfig().allowedProjects).join(', ')}`);
     console.log('\n--- Ledger Jobs ---');
     console.dir(ledger, { depth: null });
     process.exit(0);
   } else if (command === 'cancel') {
+    const { Ledger } = await import('./engine/ledger.js');
     if (!targetJobId) {
       console.error('Usage: worker-bridge cancel <jobId>');
       process.exit(1);
