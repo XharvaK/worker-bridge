@@ -212,14 +212,19 @@ describe('JobManager', () => {
     const page1 = manager.getResult(job.jobId, 0, 14);
     expect(page1.resultText).toBe('line 1\nline 2\n');
     expect(page1.offset).toBe(0);
+    expect(page1.nextOffset).toBe(14);
     expect(page1.hasMore).toBe(true);
 
     const page2 = manager.getResult(job.jobId, 14, 14);
     expect(page2.resultText).toBe('line 3\nline 4\n');
+    expect(page2.offset).toBe(14);
+    expect(page2.nextOffset).toBe(28);
     expect(page2.hasMore).toBe(true);
 
     const page3 = manager.getResult(job.jobId, 28, 14);
     expect(page3.resultText).toBe('line 5\n');
+    expect(page3.offset).toBe(28);
+    expect(page3.nextOffset).toBe(35);
     expect(page3.hasMore).toBe(false);
   });
 

@@ -150,6 +150,7 @@ export interface GetResultResult {
   totalBytes: number;
   offset: number;
   limit: number;
+  nextOffset: number;
   hasMore: boolean;
 }
 

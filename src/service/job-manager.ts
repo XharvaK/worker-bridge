@@ -56,6 +56,16 @@ export interface JobManagerOptions {
 
 const DEFAULT_PAGE_LIMIT = 32 * 1024; // 32 KB
 const MAX_PAGE_LIMIT = 64 * 1024; // 64 KB
+
+// A byte position is a valid UTF-8 code-point boundary when it is the start of
+// the buffer, the end of the buffer, or the first byte of a code point (that
+// is, not a continuation byte 10xxxxxx).
+function isUtf8CodePointBoundary(buffer: Buffer, offset: number): boolean {
+  if (offset <= 0 || offset >= buffer.length) {
+    return true;
+  }
+  return (buffer[offset] & 0xc0) !== 0x80;
+}
 const DEFAULT_TRUSTED_ROOTS = [
   process.env.WORKER_BRIDGE_TRUSTED_ROOT || path.resolve(process.env.USERPROFILE || 'C:\\Users\\Xharv', 'Projects'),
 ];
@@ -301,20 +311,47 @@ export class JobManager {
     }
 
     const text = job.resultText || '';
-    const totalBytes = Buffer.byteLength(text, 'utf8');
-    const boundedLimit = Math.min(Math.max(1, limit), MAX_PAGE_LIMIT);
     const textBuffer = Buffer.from(text, 'utf8');
-    const slice = textBuffer.subarray(offset, offset + boundedLimit).toString('utf8');
-    const hasMore = offset + boundedLimit < totalBytes;
+    const totalBytes = textBuffer.length;
+    const boundedLimit = Math.min(Math.max(1, Math.floor(limit)), MAX_PAGE_LIMIT);
+    const requestedOffset = Math.max(0, Math.floor(offset));
+
+    // offset must land on a complete UTF-8 code-point boundary. Callers that
+    // follow the returned nextOffset can never produce an invalid offset.
+    if (requestedOffset > totalBytes || !isUtf8CodePointBoundary(textBuffer, requestedOffset)) {
+      const err = new Error(
+        `INVALID_RESULT_OFFSET: Offset ${requestedOffset} is not at a UTF-8 code-point boundary within 0..${totalBytes}. Use nextOffset from the previous page.`,
+      );
+      (err as any).code = 'INVALID_RESULT_OFFSET';
+      throw err;
+    }
+
+    // Byte budget; pull the end boundary backward until it lands on a complete
+    // code point so resultText never contains U+FFFD replacement characters.
+    let end = Math.min(requestedOffset + boundedLimit, totalBytes);
+    while (end > requestedOffset && !isUtf8CodePointBoundary(textBuffer, end)) {
+      end -= 1;
+    }
+    // A budget smaller than a single code point must still make forward
+    // progress: extend to the next complete code point so nextOffset > offset.
+    if (end === requestedOffset && requestedOffset < totalBytes) {
+      end = requestedOffset + 1;
+      while (end < totalBytes && !isUtf8CodePointBoundary(textBuffer, end)) {
+        end += 1;
+      }
+    }
+
+    const slice = textBuffer.subarray(requestedOffset, end).toString('utf8');
 
     return {
       jobId: job.jobId,
       state: job.state,
       resultText: slice,
       totalBytes,
-      offset,
+      offset: requestedOffset,
       limit: boundedLimit,
-      hasMore,
+      nextOffset: end,
+      hasMore: end < totalBytes,
     };
   }
 

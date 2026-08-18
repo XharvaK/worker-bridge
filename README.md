@@ -108,7 +108,7 @@ Worker Bridge maintains a strict separation between **selection policy** (which 
 - Role: `WORKER` only (ineligible for `INVESTIGATOR` and `REVIEWER` due to lack of mechanical read-only enforcement).
 - Automatic Ranking: #4 in `WORKER` selection policy.
 - Qualification Status: Currently qualifies as `UNAVAILABLE` (`AUTOMATION_SEAM_UNAVAILABLE`) because installed/upstream Freebuff CLI provides an interactive TUI only and lacks a supported non-interactive task-delivery seam.
-- Re-qualification: Unavailability is recorded as a bounded cooldown; the provider is mechanically re-probed on a 30-minute window so a future Freebuff upgrade with a real automation seam is not permanently suppressed.
+- Re-qualification: Unavailability is recorded as a bounded cooldown; the provider is mechanically re-probed on a 30-minute window so stale unavailability does not suppress Freebuff forever. Re-probing runs the current capability detection only — the adapter still needs future implementation to detect and use a real automation seam when upstream Freebuff exposes one.
 - Fallback Behavior: When unavailable, selection gracefully falls through to #5 `OpenCode Nemotron 3.5 Lightning`.
 - Explicit Selection: Allowed, surfaces `AUTOMATION_SEAM_UNAVAILABLE` fail-closed error without false claims of execution.
 
