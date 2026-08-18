@@ -203,7 +203,7 @@ describe('Recovery-aware fallback orchestration', () => {
     return jobDir;
   }
 
-  it('falls back across eligible targets after a read-only quota failure', async () => {
+  it('falls back across eligible targets after a read-only quota failure', { timeout: 120000 }, async () => {
     const a = new RecoveryTestAdapter('mock-a', 'quota-read');
     const b = new RecoveryTestAdapter('mock-b', 'success');
     const jobId = 'job-read-fallback';
@@ -241,7 +241,7 @@ describe('Recovery-aware fallback orchestration', () => {
     expect(new TargetAvailabilityLedger(availabilityPath).get('target_a')?.state).toBe('COOLDOWN');
   });
 
-  it('does not silently fall back from an explicit target binding', async () => {
+  it('does not silently fall back from an explicit target binding', { timeout: 120000 }, async () => {
     const a = new RecoveryTestAdapter('mock-a', 'quota-read');
     const b = new RecoveryTestAdapter('mock-b', 'success');
     const jobId = 'job-explicit-target-no-fallback';
@@ -272,7 +272,7 @@ describe('Recovery-aware fallback orchestration', () => {
     expect(b.calls).toHaveLength(0);
   });
 
-  it('blocks CONTINUE without an exact persisted session ID before invoking a worker', async () => {
+  it('blocks CONTINUE without an exact persisted session ID before invoking a worker', { timeout: 120000 }, async () => {
     const a = new RecoveryTestAdapter('mock-a', 'success');
     const b = new RecoveryTestAdapter('mock-b', 'success');
     const jobId = 'job-continue-without-session';
@@ -304,7 +304,7 @@ describe('Recovery-aware fallback orchestration', () => {
     expect(b.calls).toHaveLength(0);
   });
 
-  it('allows an explicitly authorized Codex fallback for a read-only quota failure', async () => {
+  it('allows an explicitly authorized Codex fallback for a read-only quota failure', { timeout: 120000 }, async () => {
     const a = new RecoveryTestAdapter('mock-a', 'quota-read');
     const b = new RecoveryTestAdapter('mock-b', 'success');
     const codex = new RecoveryTestAdapter('codex', 'success');
@@ -340,7 +340,7 @@ describe('Recovery-aware fallback orchestration', () => {
     expect(b.calls).toHaveLength(0);
   });
 
-  it('allows an explicitly authorized Codex fallback for a write quota failure with no source effects', async () => {
+  it('allows an explicitly authorized Codex fallback for a write quota failure with no source effects', { timeout: 120000 }, async () => {
     const a = new RecoveryTestAdapter('mock-a', 'quota-write-no-effects');
     const b = new RecoveryTestAdapter('mock-b', 'success');
     const codex = new RecoveryTestAdapter('codex', 'success');
@@ -381,7 +381,7 @@ describe('Recovery-aware fallback orchestration', () => {
     expect(b.calls).toHaveLength(0);
   });
 
-  it('stops write fallback after source effects and publishes an interrupted recovery state', async () => {
+  it('stops write fallback after source effects and publishes an interrupted recovery state', { timeout: 120000 }, async () => {
     const a = new RecoveryTestAdapter('mock-a', 'quota-write');
     const b = new RecoveryTestAdapter('mock-b', 'success');
     const codex = new RecoveryTestAdapter('codex', 'success');

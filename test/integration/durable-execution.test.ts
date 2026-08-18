@@ -5,7 +5,12 @@ import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ConfigManager } from '../../src/config.js';
-import { ProcessManager } from '../../src/engine/process-manager.js';
+import {
+  ProcessManager,
+  ProcessRunOptions,
+  ProcessRunResult,
+  TerminationOutcome,
+} from '../../src/engine/process-manager.js';
 import { TargetAvailabilityLedger } from '../../src/engine/target-availability-ledger.js';
 import { DurableService } from '../../src/service/durable-service.js';
 import { getServicePipePath } from '../../src/service/ipc-protocol.js';
@@ -59,7 +64,7 @@ class DurableTestAdapter implements WorkerAdapter {
     this.calls.push(request);
     const now = new Date().toISOString();
     if (this.mode === 'sleep') {
-      await this.processManager.run(request.jobId, {
+      const runResult = await this.processManager.run(request.jobId, {
         executable: process.execPath,
         args: ['-e', 'setTimeout(() => {}, 45000)'],
         cwd: request.worktreeCwd,
@@ -69,8 +74,8 @@ class DurableTestAdapter implements WorkerAdapter {
         platformId: this.platformId,
         modelId: request.modelId,
         variant: request.variant,
-        exitCode: 0,
-        responseText: 'slow worker finished',
+        exitCode: runResult.exitCode,
+        responseText: runResult.exitCode === 0 ? 'slow worker finished' : `worker terminated (exit ${runResult.exitCode})`,
         artifactsCreated: [],
         startedAt: now,
         completedAt: new Date().toISOString(),
@@ -126,6 +131,35 @@ class DurableTestAdapter implements WorkerAdapter {
 
   async cancel(): Promise<boolean> {
     return true;
+  }
+}
+
+class GatedProcessManager extends ProcessManager {
+  readonly runCalls: Array<{ jobId: string }> = [];
+  readonly terminateCalls: string[] = [];
+  terminationOutcome: TerminationOutcome = 'TERMINATED';
+  terminationOutcomes: TerminationOutcome[] = [];
+  private waiters: Array<() => void> = [];
+  private holdRun = true;
+
+  override async run(jobId: string, options: ProcessRunOptions): Promise<ProcessRunResult> {
+    this.runCalls.push({ jobId });
+    if (this.holdRun) {
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
+    }
+    return { exitCode: 0, stdout: 'gated worker finished', stderr: '', timedOut: false, pid: null, outputTruncated: false };
+  }
+
+  override async terminateJob(jobId: string): Promise<TerminationOutcome> {
+    this.terminateCalls.push(jobId);
+    if (this.terminationOutcomes.length > 0) return this.terminationOutcomes.shift()!;
+    return this.terminationOutcome;
+  }
+
+  releaseAll(): void {
+    this.holdRun = false;
+    const waiters = this.waiters.splice(0);
+    for (const resolve of waiters) resolve();
   }
 }
 
@@ -219,7 +253,10 @@ describe('Durable IPC execution', () => {
     });
   }
 
-  function makeService(adapterFactories: (pm: ProcessManager) => DurableTestAdapter[]): { service: DurableService; adapters: DurableTestAdapter[] } {
+  function makeService(
+    adapterFactories: (pm: ProcessManager) => DurableTestAdapter[],
+    opts: { processManager?: ProcessManager } = {}
+  ): { service: DurableService; adapters: DurableTestAdapter[] } {
     const registry = new AdapterRegistry();
     const jobManager = new JobManager({ trustedRoots: [root], storagePath });
     const service = new DurableService({
@@ -229,6 +266,7 @@ describe('Durable IPC execution', () => {
       jobManager,
       adapterRegistry: registry,
       trustedRoots: [root],
+      processManager: opts.processManager,
     });
     const adapters = adapterFactories(service.getProcessManager());
     for (const adapter of adapters) registry.register(adapter);
@@ -292,16 +330,25 @@ describe('Durable IPC execution', () => {
   });
 
   it('cancels a queued job before execution: CANCELLED with no invocation', { timeout: 120000 }, async () => {
-    const { service, adapters } = makeService((pm) => [
-      new DurableTestAdapter('mock-a', 'sleep', pm),
-      new DurableTestAdapter('mock-b', 'success', pm),
-    ]);
+    const gated = new GatedProcessManager();
+    const { service, adapters } = makeService(
+      (pm) => [
+        new DurableTestAdapter('mock-a', 'sleep', pm),
+        new DurableTestAdapter('mock-b', 'success', pm),
+      ],
+      { processManager: gated }
+    );
     const slowA = adapters[0];
     const b = adapters[1];
     await service.start();
     try {
       const first = service.startJob(startParams('durable-queue-1') as never);
       await waitForState(service, first.jobId, 'WORKER_RUNNING');
+      const invocationDeadline = Date.now() + 30_000;
+      while (slowA.calls.length === 0) {
+        if (Date.now() > invocationDeadline) throw new Error('Worker was never invoked.');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
 
       const second = service.startJob(startParams('durable-queue-2') as never);
       expect(second.state).toBe('PENDING');
@@ -310,11 +357,13 @@ describe('Durable IPC execution', () => {
       expect(cancel.previousState).toBe('PENDING');
       expect(cancel.newState).toBe('CANCELLED');
 
+      gated.releaseAll();
       const done = await waitForTerminal(service, first.jobId);
       expect(done.state).toBe('WORKER_RETURNED');
       const secondJob = service.getJob({ jobId: second.jobId });
       expect(secondJob.state).toBe('CANCELLED');
       expect(b.calls).toHaveLength(0);
+      expect(gated.terminateCalls).toHaveLength(0);
     } finally {
       await service.stop();
     }
@@ -343,6 +392,147 @@ describe('Durable IPC execution', () => {
       expect(done.completedAt).toBeTruthy();
       expect(slowA.calls).toHaveLength(1);
     } finally {
+      await service.stop();
+    }
+  });
+
+  it('fails closed to INTERRUPTED when termination cannot be confirmed', { timeout: 120000 }, async () => {
+    const gated = new GatedProcessManager();
+    gated.terminationOutcome = 'TERMINATION_UNCONFIRMED';
+    const { service, adapters } = makeService(
+      (pm) => [new DurableTestAdapter('mock-a', 'sleep', pm)],
+      { processManager: gated }
+    );
+    const slowA = adapters[0];
+    await service.start();
+    try {
+      const start = service.startJob(startParams('durable-cancel-unconfirmed') as never);
+      await waitForState(service, start.jobId, 'WORKER_RUNNING');
+      const invocationDeadline = Date.now() + 30_000;
+      while (slowA.calls.length === 0) {
+        if (Date.now() > invocationDeadline) throw new Error('Worker was never invoked before cancel.');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      const cancel = await service.cancelJob({ jobId: start.jobId });
+      expect(cancel.previousState).toBe('WORKER_RUNNING');
+      expect(cancel.newState).toBe('INTERRUPTED');
+      expect(cancel.recoveryRequired).toBe(false);
+
+      const done = service.getJob({ jobId: start.jobId });
+      expect(done.state).toBe('INTERRUPTED');
+      expect(done.error).toContain('CANCELLATION_UNCONFIRMED');
+      expect(done.completedAt).toBeTruthy();
+      expect(gated.terminateCalls).toEqual([start.jobId, start.jobId]);
+
+      gated.releaseAll();
+      const after = await waitForTerminal(service, start.jobId);
+      expect(after.state).toBe('INTERRUPTED');
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it('preserves a natural WORKER_RETURNED when no tracked process remained to terminate', { timeout: 120000 }, async () => {
+    const gated = new GatedProcessManager();
+    gated.terminationOutcome = 'NO_ACTIVE_PROCESS';
+    const { service, adapters } = makeService(
+      (pm) => [new DurableTestAdapter('mock-a', 'sleep', pm)],
+      { processManager: gated }
+    );
+    const slowA = adapters[0];
+    await service.start();
+    try {
+      const start = service.startJob(startParams('durable-cancel-race') as never);
+      await waitForState(service, start.jobId, 'WORKER_RUNNING');
+      const invocationDeadline = Date.now() + 30_000;
+      while (slowA.calls.length === 0) {
+        if (Date.now() > invocationDeadline) throw new Error('Worker was never invoked before cancel.');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      const cancelling = service.cancelJob({ jobId: start.jobId });
+      gated.releaseAll();
+      const cancel = await cancelling;
+      expect(cancel.previousState).toBe('WORKER_RUNNING');
+      expect(cancel.newState).toBe('WORKER_RETURNED');
+      expect(cancel.recoveryRequired).toBe(false);
+
+      const done = await waitForTerminal(service, start.jobId);
+      expect(done.state).toBe('WORKER_RETURNED');
+      expect(done.verification).toContain('READ_ONLY verified');
+      expect(gated.terminateCalls).toEqual([start.jobId]);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it('confirms cancellation when the worker process spawns during the settle window', { timeout: 120000 }, async () => {
+    const gated = new GatedProcessManager();
+    gated.terminationOutcomes = ['NO_ACTIVE_PROCESS', 'TERMINATED'];
+    const { service, adapters } = makeService(
+      (pm) => [new DurableTestAdapter('mock-a', 'sleep', pm)],
+      { processManager: gated }
+    );
+    const slowA = adapters[0];
+    await service.start();
+    try {
+      const start = service.startJob(startParams('durable-cancel-late-spawn') as never);
+      await waitForState(service, start.jobId, 'WORKER_RUNNING');
+      const invocationDeadline = Date.now() + 30_000;
+      while (slowA.calls.length === 0) {
+        if (Date.now() > invocationDeadline) throw new Error('Worker was never invoked before cancel.');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      const cancel = await service.cancelJob({ jobId: start.jobId });
+      expect(cancel.previousState).toBe('WORKER_RUNNING');
+      expect(cancel.newState).toBe('CANCELLED');
+
+      const done = service.getJob({ jobId: start.jobId });
+      expect(done.state).toBe('CANCELLED');
+      expect(done.error).toContain('mechanically confirmed');
+      expect(done.completedAt).toBeTruthy();
+      expect(gated.terminateCalls).toEqual([start.jobId, start.jobId]);
+      expect(gated.runCalls).toHaveLength(1);
+    } finally {
+      gated.releaseAll();
+      await service.stop();
+    }
+  });
+
+  it('treats a repeated cancel as a truthful no-op', { timeout: 120000 }, async () => {
+    const gated = new GatedProcessManager();
+    const { service, adapters } = makeService(
+      (pm) => [new DurableTestAdapter('mock-a', 'sleep', pm)],
+      { processManager: gated }
+    );
+    const slowA = adapters[0];
+    await service.start();
+    try {
+      const start = service.startJob(startParams('durable-cancel-twice') as never);
+      await waitForState(service, start.jobId, 'WORKER_RUNNING');
+      const invocationDeadline = Date.now() + 30_000;
+      while (slowA.calls.length === 0) {
+        if (Date.now() > invocationDeadline) throw new Error('Worker was never invoked before cancel.');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      const first = await service.cancelJob({ jobId: start.jobId });
+      expect(first.previousState).toBe('WORKER_RUNNING');
+      expect(first.newState).toBe('CANCELLED');
+
+      const second = await service.cancelJob({ jobId: start.jobId });
+      expect(second.previousState).toBe('CANCELLED');
+      expect(second.newState).toBe('CANCELLED');
+      expect(second.recoveryRequired).toBe(false);
+
+      const done = service.getJob({ jobId: start.jobId });
+      expect(done.state).toBe('CANCELLED');
+      expect(gated.terminateCalls).toHaveLength(1);
+      expect(gated.runCalls).toHaveLength(1);
+    } finally {
+      gated.releaseAll();
       await service.stop();
     }
   });

@@ -29,6 +29,19 @@ export interface ProcessRunResult {
 
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024;
 
+const TERMINATION_CONFIRM_TIMEOUT_MS = 5_000;
+const TERMINATION_CONFIRM_INTERVAL_MS = 100;
+
+/**
+ * Mechanical evidence of a requested process-tree termination.
+ * - NO_ACTIVE_PROCESS: nothing was tracked, or the known child PID was already
+ *   gone when termination was requested (it exited on its own).
+ * - TERMINATED: taskkill succeeded AND the known child PID was observed dead.
+ * - TERMINATION_UNCONFIRMED: termination was requested but the known child PID
+ *   could not be proven dead within the bounded confirmation window.
+ */
+export type TerminationOutcome = 'NO_ACTIVE_PROCESS' | 'TERMINATED' | 'TERMINATION_UNCONFIRMED';
+
 export interface SafeProcessInvocation {
   executable: string;
   args: string[];
@@ -64,6 +77,7 @@ function sanitizeBounded(value: string, maxBytes: number): { value: string; trun
 
 export class ProcessManager {
   private activeProcesses: Map<string, ChildProcess> = new Map();
+  private killedPids: Set<number> = new Set();
 
   isPidAlive(pid: number): boolean {
     if (!pid || pid <= 0) return false;
@@ -75,16 +89,50 @@ export class ProcessManager {
     }
   }
 
-  async killProcessTree(pid: number): Promise<void> {
-    if (!pid || pid <= 0) return;
+  async killProcessTree(pid: number): Promise<TerminationOutcome> {
+    if (!pid || pid <= 0) return 'NO_ACTIVE_PROCESS';
+    let killed = false;
     try {
       logger.info(`Killing process tree for PID ${pid}`);
       await execFileAsync('taskkill', ['/PID', pid.toString(), '/T', '/F'], {
         windowsHide: true,
       });
+      killed = true;
+      this.killedPids.add(pid);
     } catch (err: any) {
       logger.debug(`taskkill error (process may already be dead): ${err.message || String(err)}`);
     }
+
+    // taskkill returning does not by itself prove termination. Confirm the
+    // known child PID is actually gone within a bounded window.
+    const deadline = Date.now() + TERMINATION_CONFIRM_TIMEOUT_MS;
+    for (;;) {
+      if (!this.isPidAlive(pid)) {
+        return killed ? 'TERMINATED' : 'NO_ACTIVE_PROCESS';
+      }
+      if (Date.now() >= deadline) {
+        return 'TERMINATION_UNCONFIRMED';
+      }
+      await new Promise((resolve) => setTimeout(resolve, TERMINATION_CONFIRM_INTERVAL_MS));
+    }
+  }
+
+  /**
+   * Termination authority for a tracked job. Returns mechanical evidence;
+   * only TERMINATED means the known child process tree was killed and
+   * confirmed dead.
+   */
+  async terminateJob(jobId: string): Promise<TerminationOutcome> {
+    const child = this.activeProcesses.get(jobId);
+    if (!child || !child.pid) {
+      return 'NO_ACTIVE_PROCESS';
+    }
+    logger.info(`Cancelling active process for job ${jobId} (PID: ${child.pid})`);
+    const outcome = await this.killProcessTree(child.pid);
+    if (outcome === 'TERMINATED') {
+      this.activeProcesses.delete(jobId);
+    }
+    return outcome;
   }
 
   async run(jobId: string, options: ProcessRunOptions): Promise<ProcessRunResult> {
@@ -174,10 +222,16 @@ export class ProcessManager {
       child.on('close', (code) => {
         if (timeoutHandle) clearTimeout(timeoutHandle);
         this.activeProcesses.delete(jobId);
+        const killed = pid !== null && this.killedPids.has(pid);
+        if (pid !== null) {
+          this.killedPids.delete(pid);
+        }
         const stdout = sanitizeBounded(stdoutAcc, maxOutputBytes);
         const stderr = sanitizeBounded(stderrAcc, maxOutputBytes);
         resolve({
-          exitCode: code ?? (timedOut ? 124 : 0),
+          // A child killed by us (or by the timeout path) must never surface
+          // as a clean exit; its failure is the cancellation evidence.
+          exitCode: code ?? (timedOut || killed ? 124 : 0),
           stdout: stdout.value,
           stderr: stderr.value,
           timedOut,
@@ -189,13 +243,7 @@ export class ProcessManager {
   }
 
   async cancelJob(jobId: string): Promise<boolean> {
-    const child = this.activeProcesses.get(jobId);
-    if (child && child.pid) {
-      logger.info(`Cancelling active process for job ${jobId} (PID: ${child.pid})`);
-      await this.killProcessTree(child.pid);
-      this.activeProcesses.delete(jobId);
-      return true;
-    }
-    return false;
+    const outcome = await this.terminateJob(jobId);
+    return outcome === 'TERMINATED';
   }
 }

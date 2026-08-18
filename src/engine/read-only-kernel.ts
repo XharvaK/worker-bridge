@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ConfigManager } from '../config.js';
-import { ProcessManager } from './process-manager.js';
+import { ProcessManager, TerminationOutcome } from './process-manager.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { verifyBaseSha } from '../git/repo-guard.js';
 import { AdapterRegistry } from '../worker/adapter-registry.js';
@@ -568,8 +568,10 @@ export class ReadOnlyExecutionKernel {
 
   /**
    * Cancel an active worker execution through the single shared ProcessManager.
+   * Returns mechanical termination evidence; only TERMINATED means the known
+   * child process tree was killed and confirmed dead.
    */
-  async cancelActiveExecution(jobId: string): Promise<boolean> {
-    return this.processManager.cancelJob(jobId);
+  async cancelActiveExecution(jobId: string): Promise<TerminationOutcome> {
+    return this.processManager.terminateJob(jobId);
   }
 }

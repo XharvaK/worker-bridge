@@ -395,6 +395,44 @@ export class JobManager {
     };
   }
 
+  /**
+   * Transition to CANCELLED after the caller has mechanically confirmed that
+   * the worker process tree is dead. Never rewrites a truthful natural
+   * completion (WORKER_RETURNED), an already settled cancellation, or a
+   * fail-closed interruption. Used by the durable cancellation flow only.
+   */
+  confirmCancellation(jobId: string, error?: string): CancelJobResult {
+    const job = this.jobs.get(jobId);
+    if (!job) {
+      throw new Error(`JOB_NOT_FOUND: Job "${jobId}" was not found.`);
+    }
+
+    const previousState = job.state;
+    if (
+      job.state !== 'WORKER_RETURNED' &&
+      job.state !== 'CANCELLED' &&
+      job.state !== 'INTERRUPTED' &&
+      job.state !== 'INTERRUPTED_WITH_SOURCE_STATE' &&
+      job.state !== 'BLOCKED'
+    ) {
+      job.state = 'CANCELLED';
+      job.completedAt = new Date().toISOString();
+      if (error !== undefined) {
+        job.error = error;
+      }
+      this.saveToDisk();
+    }
+
+    const sourceEffectsPresent = job.sourceEffectsPresent || job.state === 'INTERRUPTED_WITH_SOURCE_STATE';
+    return {
+      jobId: job.jobId,
+      previousState,
+      newState: job.state,
+      sourceEffectsPresent,
+      recoveryRequired: sourceEffectsPresent,
+    };
+  }
+
   approveJob(challenge: string, source = 'ipc_cli'): ApproveJobResult {
     const jobId = this.challengeToJobId.get(challenge);
     if (!jobId) {

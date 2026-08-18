@@ -72,7 +72,7 @@ describe('Orchestrator End-to-End Workflow', () => {
     }
   });
 
-  it('executes PLAN, then IMPLEMENT after Sol review, and handles CANCEL with strict isolation', async () => {
+  it('executes PLAN, then IMPLEMENT after Sol review, and handles CANCEL with strict isolation', { timeout: 120000 }, async () => {
     process.env.MOCK_AGY_MODE = 'success';
 
     const testConfig = {

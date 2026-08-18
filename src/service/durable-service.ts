@@ -33,7 +33,7 @@ import {
 } from './ipc-protocol.js';
 import { IpcServer } from './ipc-server.js';
 import { JobManager, StoredJobRecord } from './job-manager.js';
-import { WorkerRole } from '../types.js';
+import { TargetAvailabilityRecord, WorkerRole } from '../types.js';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_IPC_STORAGE_PATH = path.join(USER_BRIDGE_DIR, 'ipc-jobs.json');
@@ -57,6 +57,7 @@ export interface DurableServiceOptions {
   availabilityLedger?: TargetAvailabilityLedger;
   jobManager?: JobManager;
   adapterRegistry?: AdapterRegistry;
+  processManager?: ProcessManager;
   storagePath?: string;
   trustedRoots?: string[];
 }
@@ -84,7 +85,7 @@ export class DurableService {
 
     this.ledger = options?.ledger || new Ledger();
     this.availability = options?.availabilityLedger || new TargetAvailabilityLedger();
-    this.processManager = new ProcessManager();
+    this.processManager = options?.processManager || new ProcessManager();
     this.worktreeManager = new WorktreeManager(cfg.workerRootDir);
 
     this.registry = options?.adapterRegistry || buildAdapterRegistry(cfg, this.processManager);
@@ -171,18 +172,38 @@ export class DurableService {
   }
 
   listTargets(): ListTargetsResult {
+    // Materialize cooldown expiry so stale COOLDOWN records surface as
+    // ELIGIBLE_TO_RETRY (UNKNOWN) rather than as still-unavailable.
+    this.availability.refreshEligibility(new Date());
     const policy = this.modelSelector.getPolicy();
     const targets = Object.values(policy.targets || {}).slice(0, 128);
 
+    // Qualification reflects positive availability evidence, not permission to
+    // probe. Eligibility ("may attempt") and qualification ("positive evidence")
+    // are separate concepts: an expired cooldown is eligible again but UNKNOWN
+    // until a probe or successful execution provides evidence.
+    const qualificationFor = (record: TargetAvailabilityRecord | null): TargetQualification => {
+      if (!record) return 'UNKNOWN';
+      switch (record.state) {
+        case 'AVAILABLE':
+          return 'KNOWN_AVAILABLE';
+        case 'LOW':
+          // LOW is a positive-but-degraded provider response: still usable.
+          return 'KNOWN_AVAILABLE';
+        case 'COOLDOWN':
+        case 'EXHAUSTED':
+          return 'KNOWN_UNAVAILABLE';
+        case 'ELIGIBLE_TO_RETRY':
+        case 'UNKNOWN':
+          return 'UNKNOWN';
+        default:
+          return 'UNKNOWN';
+      }
+    };
+
     const mapped = targets.map((t) => {
       const record = this.availability.get(t.targetId);
-      const eligible = this.availability.isEligible(t.targetId);
-      let qualification: TargetQualification;
-      if (!record) {
-        qualification = 'UNKNOWN';
-      } else {
-        qualification = eligible ? 'KNOWN_AVAILABLE' : 'KNOWN_UNAVAILABLE';
-      }
+      const qualification = qualificationFor(record);
       return {
         targetId: t.targetId,
         platformId: t.platformId,
@@ -220,21 +241,112 @@ export class DurableService {
       throw new Error(`JOB_NOT_FOUND: Job "${params.jobId}" was not found.`);
     }
     const previousState = record.state;
-    const result = this.jobManager.cancelJob(params.jobId);
 
+    // Already-settled terminal states are returned truthfully as-is. A later
+    // cancel never rewrites an observed terminal (natural completion, failure,
+    // fail-closed interruption, or a previous confirmed cancellation).
+    if (previousState !== 'PENDING' && previousState !== 'WORKER_RUNNING') {
+      return {
+        jobId: record.jobId,
+        previousState,
+        newState: record.state,
+        sourceEffectsPresent: record.sourceEffectsPresent || record.state === 'INTERRUPTED_WITH_SOURCE_STATE',
+        recoveryRequired: record.sourceEffectsPresent || record.state === 'INTERRUPTED_WITH_SOURCE_STATE',
+      };
+    }
+
+    // Queued / not yet started: no worker process exists, so CANCELLED is
+    // mechanically truthful without any termination step.
     if (previousState === 'PENDING') {
       const queuedIndex = this.queue.indexOf(params.jobId);
       if (queuedIndex >= 0) {
         this.queue.splice(queuedIndex, 1);
       }
-    } else if (previousState === 'WORKER_RUNNING') {
-      await this.kernel.cancelActiveExecution(params.jobId);
+      return this.jobManager.cancelJob(params.jobId);
+    }
+
+    // WORKER_RUNNING: request termination FIRST, then let the execution settle
+    // within a bounded window, then decide the terminal state from mechanical
+    // evidence. CANCELLED is only ever claimed when termination was confirmed.
+    const termination = await this.kernel.cancelActiveExecution(params.jobId);
+    if (termination !== 'TERMINATED') {
       const promise = this.executionPromises.get(params.jobId);
       if (promise) {
         await Promise.race([promise, sleep(CANCEL_AWAIT_TIMEOUT_MS)]);
       }
+      // The worker process may not have existed yet when the first termination
+      // attempt ran (the job was still resolving/planning). Re-check: if a
+      // process exists now, terminate it and treat the confirmation as valid.
+      if (this.jobManager.getJobRecord(params.jobId)?.state === 'WORKER_RUNNING') {
+        const recheck = await this.kernel.cancelActiveExecution(params.jobId);
+        if (recheck === 'TERMINATED') {
+          const confirmed = this.jobManager.confirmCancellation(
+            params.jobId,
+            'CANCELLED: worker process tree termination was mechanically confirmed.'
+          );
+          return { ...confirmed, previousState };
+        }
+      }
     }
-    return result;
+
+    const current = this.jobManager.getJobRecord(params.jobId);
+    if (!current) {
+      throw new Error(`JOB_NOT_FOUND: Job "${params.jobId}" was not found.`);
+    }
+    if (current.state === 'WORKER_RETURNED' || current.state === 'FAILED' || current.state === 'BLOCKED') {
+      // The worker settled a truthful terminal state while cancellation raced
+      // (or a genuine failure landed before/without our termination). Preserve
+      // it; only a confirmed termination may convert FAILED into CANCELLED.
+      if (current.state === 'FAILED' && termination === 'TERMINATED') {
+        const confirmed = this.jobManager.confirmCancellation(
+          params.jobId,
+          'CANCELLED: worker process tree termination was mechanically confirmed.'
+        );
+        return { ...confirmed, previousState };
+      }
+      return {
+        jobId: current.jobId,
+        previousState,
+        newState: current.state,
+        sourceEffectsPresent: Boolean(current.sourceEffectsPresent),
+        recoveryRequired: Boolean(current.sourceEffectsPresent),
+      };
+    }
+    if (current.state !== 'WORKER_RUNNING') {
+      // CANCELLED / INTERRUPTED / INTERRUPTED_WITH_SOURCE_STATE already settled
+      // (e.g., a prior cancel or restart reconciliation won the race).
+      return {
+        jobId: current.jobId,
+        previousState,
+        newState: current.state,
+        sourceEffectsPresent: current.sourceEffectsPresent || current.state === 'INTERRUPTED_WITH_SOURCE_STATE',
+        recoveryRequired: current.sourceEffectsPresent || current.state === 'INTERRUPTED_WITH_SOURCE_STATE',
+      };
+    }
+
+    if (termination === 'TERMINATED') {
+      const confirmed = this.jobManager.confirmCancellation(
+        params.jobId,
+        'CANCELLED: worker process tree termination was mechanically confirmed.'
+      );
+      return { ...confirmed, previousState };
+    }
+    this.jobManager.updateJobResult(params.jobId, {
+      state: 'INTERRUPTED',
+      error:
+        termination === 'NO_ACTIVE_PROCESS'
+          ? 'CANCELLATION_UNCONFIRMED: no tracked worker process remained to terminate; the job did not settle cleanly.'
+          : 'CANCELLATION_UNCONFIRMED: worker process termination could not be mechanically confirmed within the bounded window.',
+      completedAt: new Date().toISOString(),
+    });
+    const interrupted = this.jobManager.getJobRecord(params.jobId);
+    return {
+      jobId: params.jobId,
+      previousState,
+      newState: interrupted ? interrupted.state : 'INTERRUPTED',
+      sourceEffectsPresent: false,
+      recoveryRequired: false,
+    };
   }
 
   private approveJob(params: ApproveJobParams, connectionId: string): ApproveJobResult {
