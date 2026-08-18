@@ -469,6 +469,38 @@ describe('ModelSelector & target policy invariants', () => {
     expect(byPlatform).toMatchObject({ targetId: 'codex_explicit', platform: 'codex', modelId: 'gpt-5' });
   });
 
+  it('resolves an explicit platform-only selection when exactly one target exists for that platform', async () => {
+    const config = makeConfig({
+      solo_target: target('solo_target', 'fake-solo', 'solo-model'),
+    }, { INVESTIGATOR: [] });
+    const registry = new AdapterRegistry();
+    registry.register(new FakeAdapter('fake-solo', ['solo-model']));
+    const selector = new ModelSelector(registry, config);
+
+    const resolved = await selector.resolveExplicitSelection({ platform: 'fake-solo' });
+
+    expect(resolved).toMatchObject({
+      targetId: 'solo_target',
+      platform: 'fake-solo',
+      modelId: 'solo-model',
+      modelBinding: 'FIXED',
+    });
+  });
+
+  it('fails closed on an explicit platform-only selection when the platform has multiple targets', async () => {
+    const config = makeConfig({
+      first_target: target('first_target', 'fake-multi', 'first-model'),
+      second_target: target('second_target', 'fake-multi', 'second-model'),
+    }, { INVESTIGATOR: [] });
+    const registry = new AdapterRegistry();
+    registry.register(new FakeAdapter('fake-multi', ['first-model', 'second-model']));
+    const selector = new ModelSelector(registry, config);
+
+    await expect(selector.resolveExplicitSelection({ platform: 'fake-multi' })).rejects.toThrow(
+      /is not configured in local target policy/
+    );
+  });
+
   it('prefers a same-platform fixed model before a dynamic target', async () => {
     const config = makeConfig({
       dynamic_target: {

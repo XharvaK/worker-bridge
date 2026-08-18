@@ -2,7 +2,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { USER_BRIDGE_DIR } from '../config.js';
 import { getSafeProcessInvocation, ProcessManager } from '../engine/process-manager.js';
 import {
   DiscoveredModel,
@@ -16,6 +15,11 @@ const execFileAsync = promisify(execFile);
 
 export const DEFAULT_FREEBUFF_PATH = 'freebuff';
 
+// Bounded window after which an unavailable provider is mechanically re-qualified.
+// The automation seam may become available in a future Freebuff upgrade, so a
+// failure record must never permanently suppress the target.
+const RE_QUALIFICATION_WINDOW_MS = 30 * 60 * 1000;
+
 export class FreebuffAdapter implements WorkerAdapter {
   readonly platformId = 'freebuff';
   readonly supportsCrossModelSessionContinuation = false;
@@ -28,18 +32,6 @@ export class FreebuffAdapter implements WorkerAdapter {
   ) {
     this.freebuffExecutable = freebuffExecutable;
     this.processManager = processManager || new ProcessManager();
-  }
-
-  getExecutablePath(): string {
-    return this.freebuffExecutable;
-  }
-
-  getJobLogFilePath(jobId: string): string {
-    const logsDir = path.join(USER_BRIDGE_DIR, 'logs');
-    if (!fs.existsSync(logsDir)) {
-      fs.mkdirSync(logsDir, { recursive: true });
-    }
-    return path.join(logsDir, `${jobId}-freebuff.log`);
   }
 
   async inspectEnvironment(): Promise<WorkerPlatformInfo> {
@@ -87,7 +79,10 @@ export class FreebuffAdapter implements WorkerAdapter {
 
     const versionFromPackage = readPackageJsonVersion();
     const versionFromMetadata = readMetadataVersion();
-    const resolvedVersion = versionFromPackage || versionFromMetadata || '0.0.149';
+    // Never convert an unknown version into a known one. Only mechanically
+    // established versions (on-disk package metadata or executable output) are
+    // reported as runtime truth.
+    const resolvedVersion = versionFromPackage || versionFromMetadata;
 
     const nativeBinary = path.join(
       process.env.USERPROFILE || process.env.HOME || '',
@@ -175,10 +170,16 @@ export class FreebuffAdapter implements WorkerAdapter {
 
   async probeQuota(_modelId?: string): Promise<QuotaProbeResult> {
     // Qualification gate: Upstream Freebuff CLI currently has no supported non-interactive task-delivery seam.
+    // The bounded resetsAt horizon converts the failure record into a COOLDOWN so the
+    // provider is mechanically re-qualified on future probes instead of being
+    // permanently suppressed after its seam becomes available in a future upgrade.
     return {
       state: 'ERROR',
       failureClass: 'AUTOMATION_SEAM_UNAVAILABLE',
-      details: 'Freebuff CLI currently has no supported non-interactive task-delivery seam (interactive TUI only).',
+      resetsAt: new Date(Date.now() + RE_QUALIFICATION_WINDOW_MS).toISOString(),
+      details:
+        'Freebuff CLI currently has no supported non-interactive task-delivery seam (interactive TUI only). ' +
+        `Will re-qualify availability after ${RE_QUALIFICATION_WINDOW_MS / 60000} minutes.`,
     };
   }
 

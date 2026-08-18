@@ -119,8 +119,52 @@ describe('Freebuff Policy & Routing Integration', () => {
     // Verify freebuff_default was recorded as unavailable in the availability store
     const freebuffRecord = availability.get('freebuff_default');
     expect(freebuffRecord).toBeDefined();
-    expect(freebuffRecord?.state).toBe('EXHAUSTED');
+    // The bounded re-qualification horizon makes this a COOLDOWN, never a
+    // permanent EXHAUSTED suppression.
+    expect(freebuffRecord?.state).toBe('COOLDOWN');
     expect(freebuffRecord?.failureClass).toBe('AUTOMATION_SEAM_UNAVAILABLE');
+    expect(freebuffRecord?.retryAt).toBeDefined();
+  });
+
+  it('re-qualifies freebuff after the cooldown window instead of permanently suppressing it', async () => {
+    const registry = new AdapterRegistry();
+    registry.register(createMockAdapter('codex'));
+    registry.register(createMockAdapter('antigravity'));
+    registry.register(createMockAdapter('cursor-cli'));
+    registry.register(createMockAdapter('opencode'));
+
+    const freebuffAdapter = new FreebuffAdapter();
+    vi.spyOn(freebuffAdapter, 'inspectEnvironment').mockResolvedValue({
+      platformId: 'freebuff',
+      displayName: 'Freebuff',
+      installed: true,
+      version: '0.0.149',
+      executablePath: 'freebuff',
+    });
+    const probeSpy = vi.spyOn(freebuffAdapter, 'probeQuota');
+    registry.register(freebuffAdapter);
+
+    const availability = new InMemoryTargetAvailabilityStore();
+    const selector = new ModelSelector(registry, undefined, availability);
+    const excludedFailed = new Set(['codex_luna_max', 'agy_gemini_flash_37_high', 'cursor_grok_46_medium']);
+
+    // First ranking attempt: freebuff fails qualification and enters COOLDOWN.
+    const first = await selector.resolveSelection(undefined, 'WORKER', excludedFailed);
+    expect(first.targetId).toBe('opencode_nemotron_35_lightning');
+    expect(probeSpy).toHaveBeenCalledTimes(1);
+
+    const record = availability.get('freebuff_default');
+    expect(record?.state).toBe('COOLDOWN');
+    const retryAt = Date.parse(record!.retryAt!);
+
+    // Inside the cooldown window the target is skipped without re-probing.
+    await selector.resolveSelection(undefined, 'WORKER', excludedFailed, undefined, new Date(retryAt - 1));
+    expect(probeSpy).toHaveBeenCalledTimes(1);
+
+    // After the window the target is mechanically re-qualified via a fresh probe.
+    const later = await selector.resolveSelection(undefined, 'WORKER', excludedFailed, undefined, new Date(retryAt + 1));
+    expect(later.targetId).toBe('opencode_nemotron_35_lightning');
+    expect(probeSpy).toHaveBeenCalledTimes(2);
   });
 
   it('explicit selection of freebuff_default surfaces AUTOMATION_SEAM_UNAVAILABLE and does not claim executability', async () => {

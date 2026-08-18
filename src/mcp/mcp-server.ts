@@ -33,7 +33,7 @@ export const MCP_TOOL_DEFINITIONS = [
   {
     name: 'worker_bridge_start_job',
     description:
-      'Start a new Worker Bridge job. Cursor Agent (Grok 4.6) orchestrates the task; Worker Bridge delegates to downstream CLI workers (Codex CLI, Antigravity CLI, Cursor CLI, Freebuff, OpenCode CLI) with automatic role-based model ranking. READ_ONLY jobs execute immediately in isolated worktrees. WORKTREE_WRITE mode requires authenticated owner authority and fails closed over MCP.',
+      'Start a new Worker Bridge job. The northbound orchestrator (for example ChatGPT via DevSpace-WB, or Cursor Agent) coordinates the task; Worker Bridge selects and orchestrates downstream CLI workers under its active routing policy with automatic role-based model ranking. READ_ONLY jobs execute immediately in isolated worktrees. WORKTREE_WRITE mode requires authenticated owner authority and fails closed over MCP.',
     inputSchema: {
       type: 'object',
       properties: {

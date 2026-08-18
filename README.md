@@ -1,6 +1,6 @@
 # Worker Bridge (`worker-bridge`)
 
-A lightweight, secure, local development bridge connecting **Doc** and **Cursor Agent (Grok 4.6)** (northbound planner/orchestrator) to multi-platform headless AI workers across five CLI provider families:
+A lightweight, secure, local development bridge connecting **Doc** and a **northbound orchestrator** (primary: ChatGPT through the DevSpace-WB gateway; also supported: Cursor Agent / Grok 4.6) to multi-platform headless AI workers across five CLI provider families:
 1. **OpenAI Codex CLI** (`codex`): `luna-max` (`gpt-5.6-luna`, Priority #1 for WORKER) and explicit-only discovered models (`codex_explicit`)
 2. **Google Antigravity CLI** (`agy`): `gemini-3.7-flash-high` (Gemini Flash 3.7 High)
 3. **Cursor CLI** (`cursor-cli`): `cursor-grok-4.6-xhigh`, `cursor-grok-4.6-medium`
@@ -15,10 +15,10 @@ A lightweight, secure, local development bridge connecting **Doc** and **Cursor 
                            DOC (Human Owner)
                                   |
                                   v
-                      Cursor Agent / Grok 4.6
-                    (Northbound Orchestrator)
+                  Northbound Orchestrator
+        (ChatGPT via DevSpace-WB gateway; Cursor Agent also supported)
                                   |
-                                  | MCP (JSON-RPC)
+                                  | MCP (JSON-RPC) / IPC (named pipe)
                                   v
                             WORKER BRIDGE
            /          /           |           \            \
@@ -29,7 +29,7 @@ A lightweight, secure, local development bridge connecting **Doc** and **Cursor 
       Codex CLI   AGY CLI     Cursor CLI    Freebuff     OpenCode CLI
 ```
 
-### Selection Capability vs. Current Cursor MCP Execution Capability
+### Selection Capability vs. Current MCP Execution Capability
 
 Worker Bridge maintains a strict separation between **selection policy** (which model/platform is ranked highest when execution is authorized) and **execution authority** (which execution modes are permitted over a specific interface):
 
@@ -38,15 +38,15 @@ Worker Bridge maintains a strict separation between **selection policy** (which 
   - `WORKER` Primary: `Codex CLI / Luna Max` (`gpt-5.6-luna`, reasoning: `max`)
   - `REVIEWER` Primary: `OpenCode CLI / Nemotron 3.5 Lightning` (`opencode/nemotron-3.5-lightning-free`)
 
-- **Current Cursor MCP Execution Capability**:
+- **Current MCP Execution Capability** (same fail-closed surface over both the Cursor MCP interface and the DevSpace-WB northbound gateway):
   - `READ_ONLY` (`plan`, `design`, `investigate`, `review`, `audit`): **Fully available and executable over MCP**. Runs safely in isolated plan worktrees with mechanical read-only modes.
-  - `WORKTREE_WRITE` (`implement`, `fix`): **Blocked fail-closed over MCP with `OWNER_AUTHORITY_UNAVAILABLE`**. The WORKER ranking is active selection policy, but source-writing delegation from Cursor MCP remains unavailable until Worker Bridge has authenticated owner authority.
+  - `WORKTREE_WRITE` (`implement`, `fix`): **Blocked fail-closed over MCP with `OWNER_AUTHORITY_UNAVAILABLE`**. The WORKER ranking is active selection policy, but source-writing delegation from a northbound orchestrator remains unavailable until Worker Bridge has authenticated owner authority.
 
 ---
 
 ## Core Principles & Law
 
-1. **Workflow Ownership**: The workflow belongs to Doc (the human operator). Cursor Agent (running Grok 4.6) is the northbound planner and orchestrator. AI outputs and assistant recommendations do not constitute owner authorization.
+1. **Workflow Ownership**: The workflow belongs to Doc (the human operator). The northbound orchestrator (ChatGPT through the DevSpace-WB gateway, or Cursor Agent) plans and coordinates tasks. AI outputs and assistant recommendations do not constitute owner authorization.
 2. **Core Invariants**:
    - `WORKER PLATFORM != WORKFLOW`
    - `MODEL != AUTHORITY`
@@ -108,6 +108,7 @@ Worker Bridge maintains a strict separation between **selection policy** (which 
 - Role: `WORKER` only (ineligible for `INVESTIGATOR` and `REVIEWER` due to lack of mechanical read-only enforcement).
 - Automatic Ranking: #4 in `WORKER` selection policy.
 - Qualification Status: Currently qualifies as `UNAVAILABLE` (`AUTOMATION_SEAM_UNAVAILABLE`) because installed/upstream Freebuff CLI provides an interactive TUI only and lacks a supported non-interactive task-delivery seam.
+- Re-qualification: Unavailability is recorded as a bounded cooldown; the provider is mechanically re-probed on a 30-minute window so a future Freebuff upgrade with a real automation seam is not permanently suppressed.
 - Fallback Behavior: When unavailable, selection gracefully falls through to #5 `OpenCode Nemotron 3.5 Lightning`.
 - Explicit Selection: Allowed, surfaces `AUTOMATION_SEAM_UNAVAILABLE` fail-closed error without false claims of execution.
 
@@ -148,7 +149,7 @@ Worker Bridge maintains a strict separation between **selection policy** (which 
 
 ## Running Worker Bridge
 
-### Mode A: Durable Background Service + Cursor MCP Interface
+### Mode A: Durable Background Service + MCP Interfaces
 
 1. **Start the durable background service**:
    ```bash
@@ -156,8 +157,8 @@ Worker Bridge maintains a strict separation between **selection policy** (which 
    ```
    Listens on local Windows Named Pipe `\\.\pipe\worker-bridge-<username>` (or Unix domain socket).
 
-2. **Configure Cursor IDE**:
-   Add to `~/.cursor/mcp.json` or project `.cursor/mcp.json`:
+2. **Configure a northbound MCP client** (for example the DevSpace-WB gateway, or Cursor IDE):
+   Add to `~/.cursor/mcp.json` or project `.cursor/mcp.json` for Cursor:
    ```json
    {
      "mcpServers": {

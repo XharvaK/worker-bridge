@@ -15,8 +15,9 @@ describe('FreebuffAdapter (freebuff)', () => {
     const env = await adapter.inspectEnvironment();
     expect(env.platformId).toBe('freebuff');
     expect(env.displayName).toBe('Freebuff');
-    if (env.installed) {
-      expect(env.version).toBeDefined();
+    expect(typeof env.installed).toBe('boolean');
+    if (!env.installed) {
+      expect(env.version).toBeUndefined();
     }
   });
 
@@ -32,12 +33,16 @@ describe('FreebuffAdapter (freebuff)', () => {
     expect(profile).toBeUndefined();
   });
 
-  it('probeQuota qualifies as ERROR with AUTOMATION_SEAM_UNAVAILABLE', async () => {
+  it('probeQuota qualifies as ERROR with AUTOMATION_SEAM_UNAVAILABLE and a bounded re-qualification horizon', async () => {
     const adapter = new FreebuffAdapter('freebuff');
     const quota = await adapter.probeQuota();
     expect(quota.state).toBe('ERROR');
     expect(quota.failureClass).toBe('AUTOMATION_SEAM_UNAVAILABLE');
     expect(quota.details).toContain('no supported non-interactive task-delivery seam');
+    // The bounded horizon converts the failure record into a COOLDOWN so the
+    // provider is re-qualified later instead of being permanently suppressed.
+    expect(quota.resetsAt).toBeDefined();
+    expect(Date.parse(quota.resetsAt!) - Date.now()).toBeGreaterThan(0);
   });
 
   it('validateExecutionContext rejects READ_ONLY mode with PERMISSION_BLOCKED', async () => {

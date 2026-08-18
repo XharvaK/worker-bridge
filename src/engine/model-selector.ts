@@ -5,6 +5,7 @@ import {
   DiscoveredModel,
   ExecutionMode,
   JobIntent,
+  ModelBinding,
   ReasoningStrategy,
   SelectionPolicyConfig,
   ExplicitFallbackSelection,
@@ -35,6 +36,7 @@ export interface ResolvedWorkerSelection {
   modelId: string;
   variant?: string;
   reasoningStrategy: ReasoningStrategy;
+  modelBinding?: ModelBinding;
   isExplicitOnly?: boolean;
   resolvedFromAlias?: string;
 }
@@ -187,6 +189,7 @@ export class ModelSelector {
         modelId: target.modelId || 'provider-managed',
         variant: undefined,
         reasoningStrategy: 'provider-managed',
+        modelBinding: 'PROVIDER_MANAGED',
         isExplicitOnly: target.explicitOnly,
         resolvedFromAlias: target.displayName,
       };
@@ -226,6 +229,7 @@ export class ModelSelector {
       modelId: effectiveModelId,
       variant,
       reasoningStrategy: strategy,
+      modelBinding: target.modelBinding ?? 'FIXED',
       isExplicitOnly: target.explicitOnly,
       resolvedFromAlias: target.displayName,
     };
