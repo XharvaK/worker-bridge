@@ -58,6 +58,7 @@ describe('ConfigManager & validateConfig', () => {
         'codex_luna_max',
         'agy_gemini_flash_37_high',
         'cursor_grok_46_medium',
+        'freebuff_default',
         'opencode_nemotron_35_lightning',
         'opencode_deepseek_v4_flash_max',
         'opencode_hy3_high',

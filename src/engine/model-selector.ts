@@ -89,7 +89,15 @@ export class ModelSelector {
     }
 
     const rawModel = normalizeLegacyGeminiReference(requested.model?.trim() || '');
-    if (!rawModel) return null;
+    if (!rawModel) {
+      if (requested.platform) {
+        const platformTargets = targets.filter(
+          (t) => t.platformId.toLowerCase() === requested.platform!.toLowerCase()
+        );
+        if (platformTargets.length === 1) return platformTargets[0];
+      }
+      return null;
+    }
     const normalized = this.normalizeAliasString(rawModel);
     const matchesRequestedModel = (target: WorkerTargetConfig): boolean => {
       const aliases = [target.targetId, target.displayName, target.modelId, ...(target.aliases || [])].filter(
@@ -165,6 +173,23 @@ export class ModelSelector {
     const env = await adapter.inspectEnvironment();
     if (!env.installed) {
       throw new Error(env.error || `MODEL_SELECTION_ERROR: Platform "${target.platformId}" is not installed.`);
+    }
+
+    if (target.modelBinding === 'PROVIDER_MANAGED') {
+      const quota = await adapter.probeQuota(target.modelId);
+      if (quota.state === 'EXHAUSTED' || quota.state === 'ERROR') {
+        const failureClass = quota.failureClass || (quota.state === 'EXHAUSTED' ? 'QUOTA_EXHAUSTED' : 'AUTOMATION_SEAM_UNAVAILABLE');
+        throw new WorkerAdapterError(failureClass, quota.details || 'Provider headless automation seam is unavailable.');
+      }
+      return {
+        targetId: target.targetId,
+        platform: target.platformId,
+        modelId: target.modelId || 'provider-managed',
+        variant: undefined,
+        reasoningStrategy: 'provider-managed',
+        isExplicitOnly: target.explicitOnly,
+        resolvedFromAlias: target.displayName,
+      };
     }
 
     const discovered = await this.discoverFor(adapter, explicit);
@@ -286,7 +311,7 @@ export class ModelSelector {
       if (quota.state === 'EXHAUSTED' || quota.state === 'ERROR') {
         this.availability.recordFailure(
           target,
-          quota.state === 'EXHAUSTED' ? 'QUOTA_EXHAUSTED' : 'PROCESS_FAILED',
+          quota.failureClass || (quota.state === 'EXHAUSTED' ? 'QUOTA_EXHAUSTED' : 'PROCESS_FAILED'),
           new Date().toISOString(),
           quota.resetsAt,
           quota.details,

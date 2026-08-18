@@ -8,6 +8,7 @@ import {
   DiscoveredModel,
   ExecutionMode,
   QuotaProbeResult,
+  ReasoningStrategy,
   WorkerInvocationRequest,
   WorkerRoundResult,
 } from '../types.js';
@@ -238,7 +239,7 @@ export class AntigravityAdapter implements WorkerAdapter {
 
   async resolveReasoningProfile(
     _modelId: string,
-    requestedStrategy: 'highest-supported' | 'explicit' = 'highest-supported',
+    requestedStrategy: ReasoningStrategy = 'highest-supported',
     explicitValue?: string
   ): Promise<string | undefined> {
     if (requestedStrategy === 'explicit' && explicitValue) {

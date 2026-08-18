@@ -2,6 +2,7 @@ import {
   DiscoveredModel,
   OperationalFailureClass,
   QuotaProbeResult,
+  ReasoningStrategy,
   WorkerInvocationRequest,
   WorkerRoundResult,
 } from '../types.js';
@@ -38,7 +39,7 @@ export interface WorkerAdapter {
    */
   resolveReasoningProfile(
     modelId: string,
-    requestedStrategy?: 'highest-supported' | 'explicit',
+    requestedStrategy?: ReasoningStrategy,
     explicitValue?: string
   ): Promise<string | undefined>;
 

@@ -7,6 +7,7 @@ import { getSafeProcessInvocation, ProcessManager } from '../engine/process-mana
 import {
   DiscoveredModel,
   QuotaProbeResult,
+  ReasoningStrategy,
   WorkerInvocationRequest,
   WorkerRoundResult,
 } from '../types.js';
@@ -208,7 +209,7 @@ export class OpenCodeAdapter implements WorkerAdapter {
 
   async resolveReasoningProfile(
     modelId: string,
-    requestedStrategy: 'highest-supported' | 'explicit' = 'highest-supported',
+    requestedStrategy: ReasoningStrategy = 'highest-supported',
     explicitValue?: string
   ): Promise<string | undefined> {
     if (requestedStrategy === 'explicit' && explicitValue) {

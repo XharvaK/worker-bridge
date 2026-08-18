@@ -50,14 +50,14 @@ export interface TrustedRequestContext {
   lineageParentJobId?: string;
 }
 
-export type ReasoningStrategy = 'highest-supported' | 'explicit';
+export type ReasoningStrategy = 'highest-supported' | 'explicit' | 'provider-managed';
 
 export interface ReasoningConfig {
   strategy: ReasoningStrategy;
   value?: string;
 }
 
-export type ModelBinding = 'FIXED' | 'EXPLICIT_DISCOVERED';
+export type ModelBinding = 'FIXED' | 'EXPLICIT_DISCOVERED' | 'PROVIDER_MANAGED';
 export type ModelSelectability = 'SELECTABLE' | 'NOT_SELECTABLE' | 'UNKNOWN';
 export type ReasoningTopology = 'ORDINARY' | 'TOPOLOGY_CHANGING' | 'UNKNOWN';
 
@@ -283,6 +283,7 @@ export interface QuotaProbeResult {
   remainingPercentage?: number;
   resetsAt?: string;
   details?: string;
+  failureClass?: OperationalFailureClass;
 }
 
 export interface WorkerInvocationRequest {
@@ -317,6 +318,7 @@ export type OperationalFailureClass =
   | 'PROCESS_FAILED'
   | 'OUTPUT_INVALID'
   | 'INTERRUPTED'
+  | 'AUTOMATION_SEAM_UNAVAILABLE'
   | 'UNKNOWN';
 
 export interface WorkerRoundResult {

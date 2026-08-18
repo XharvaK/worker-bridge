@@ -1,10 +1,11 @@
 # Worker Bridge (`worker-bridge`)
 
-A lightweight, secure, local development bridge connecting **Doc** and **Cursor Agent (Grok 4.6)** (northbound planner/orchestrator) to multi-platform headless AI workers across four CLI provider families:
+A lightweight, secure, local development bridge connecting **Doc** and **Cursor Agent (Grok 4.6)** (northbound planner/orchestrator) to multi-platform headless AI workers across five CLI provider families:
 1. **OpenAI Codex CLI** (`codex`): `luna-max` (`gpt-5.6-luna`, Priority #1 for WORKER) and explicit-only discovered models (`codex_explicit`)
 2. **Google Antigravity CLI** (`agy`): `gemini-3.7-flash-high` (Gemini Flash 3.7 High)
 3. **Cursor CLI** (`cursor-cli`): `cursor-grok-4.6-xhigh`, `cursor-grok-4.6-medium`
-4. **OpenCode CLI** (`opencode`): `nemotron-3.5-lightning`, `deepseek-v4-flash-max`, `hy3-high`, `laguna-s-2.1-high`, `nemotron-3-ultra`
+4. **Freebuff** (`freebuff`): `freebuff_default` (provider-managed default, Priority #4 for WORKER)
+5. **OpenCode CLI** (`opencode`): `nemotron-3.5-lightning`, `deepseek-v4-flash-max`, `hy3-high`, `laguna-s-2.1-high`, `nemotron-3-ultra`
 
 ---
 
@@ -20,12 +21,12 @@ A lightweight, secure, local development bridge connecting **Doc** and **Cursor 
                                   | MCP (JSON-RPC)
                                   v
                             WORKER BRIDGE
-           /                /             \               \
-          v                v               v               v
-    CodexAdapter      AgyAdapter     CursorAdapter   OpenCodeAdapter
-          |                |               |               |
-          v                v               v               v
-      Codex CLI         AGY CLI        Cursor CLI     OpenCode CLI
+           /          /           |           \            \
+          v          v            v            v            v
+    CodexAdapter AgyAdapter CursorAdapter FreebuffAdapter OpenCodeAdapter
+          |          |            |            |            |
+          v          v            v            v            v
+      Codex CLI   AGY CLI     Cursor CLI    Freebuff     OpenCode CLI
 ```
 
 ### Selection Capability vs. Current Cursor MCP Execution Capability
@@ -101,6 +102,15 @@ Worker Bridge maintains a strict separation between **selection policy** (which 
 - Execution and resume: worker execution and exact-session resume use `--ignore-user-config`. The bridge binds the model, native reasoning, worktree/cwd, sandbox, and approval mode.
 - Configuration: bounded project `.codex/config.toml` authority inspection rejects unknown, unparsable, or capability-expanding configuration as `PERMISSION_BLOCKED`.
 
+### 5. Freebuff (`freebuff`)
+- CLI: Official Freebuff CLI (`0.0.149+`)
+- Target: `freebuff_default` (`modelBinding: PROVIDER_MANAGED`, `reasoning: provider-managed`).
+- Role: `WORKER` only (ineligible for `INVESTIGATOR` and `REVIEWER` due to lack of mechanical read-only enforcement).
+- Automatic Ranking: #4 in `WORKER` selection policy.
+- Qualification Status: Currently qualifies as `UNAVAILABLE` (`AUTOMATION_SEAM_UNAVAILABLE`) because installed/upstream Freebuff CLI provides an interactive TUI only and lacks a supported non-interactive task-delivery seam.
+- Fallback Behavior: When unavailable, selection gracefully falls through to #5 `OpenCode Nemotron 3.5 Lightning`.
+- Explicit Selection: Allowed, surfaces `AUTOMATION_SEAM_UNAVAILABLE` fail-closed error without false claims of execution.
+
 ---
 
 ## Locked Final Rankings
@@ -118,11 +128,12 @@ Worker Bridge maintains a strict separation between **selection policy** (which 
 1. `Codex CLI — Luna Max` (`codex_luna_max` -> `gpt-5.6-luna` / `max`)
 2. `Antigravity CLI — Gemini Flash 3.7 High` (`agy_gemini_flash_37_high`)
 3. `Cursor CLI — Grok 4.6 Medium` (`cursor_grok_46_medium` -> `cursor-grok-4.6-medium`)
-4. `OpenCode CLI — Nemotron 3.5 Lightning` (`opencode_nemotron_35_lightning`)
-5. `OpenCode CLI — DeepSeek V4 Flash Max` (`opencode_deepseek_v4_flash_max`)
-6. `OpenCode CLI — HY3 High` (`opencode_hy3_high`)
-7. `OpenCode CLI — Laguna S 2.1 High` (`opencode_laguna_s_21_high`)
-8. `OpenCode CLI — Nemotron 3 Ultra` (`opencode_nemotron_3_ultra`)
+4. `Freebuff — provider-managed default` (`freebuff_default` -> provider-managed default)
+5. `OpenCode CLI — Nemotron 3.5 Lightning` (`opencode_nemotron_35_lightning`)
+6. `OpenCode CLI — DeepSeek V4 Flash Max` (`opencode_deepseek_v4_flash_max`)
+7. `OpenCode CLI — HY3 High` (`opencode_hy3_high`)
+8. `OpenCode CLI — Laguna S 2.1 High` (`opencode_laguna_s_21_high`)
+9. `OpenCode CLI — Nemotron 3 Ultra` (`opencode_nemotron_3_ultra`)
 
 ### REVIEWER (Read-Only: review / audit)
 1. `OpenCode CLI — Nemotron 3.5 Lightning` (`opencode_nemotron_35_lightning`)

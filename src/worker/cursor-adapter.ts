@@ -8,6 +8,7 @@ import {
   DiscoveredModel,
   ExecutionMode,
   QuotaProbeResult,
+  ReasoningStrategy,
   WorkerInvocationRequest,
   WorkerRoundResult,
   WorkerSessionIdentity,
@@ -241,7 +242,7 @@ export class CursorAdapter implements WorkerAdapter {
 
   async resolveReasoningProfile(
     _modelId: string,
-    _requestedStrategy: 'highest-supported' | 'explicit' = 'highest-supported',
+    _requestedStrategy: ReasoningStrategy = 'highest-supported',
     _explicitValue?: string
   ): Promise<string | undefined> {
     // Exact Cursor models (such as cursor-grok-4.6-xhigh and cursor-grok-4.6-medium)

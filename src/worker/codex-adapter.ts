@@ -10,6 +10,7 @@ import {
   DiscoveredModel,
   ExecutionMode,
   QuotaProbeResult,
+  ReasoningStrategy,
   WorkerInvocationRequest,
   WorkerRoundResult,
   WorkerSessionIdentity,
@@ -179,7 +180,7 @@ export class CodexAdapter implements WorkerAdapter {
     }
   }
 
-  async resolveReasoningProfile(modelId: string, requestedStrategy: 'highest-supported' | 'explicit' = 'highest-supported', explicitValue?: string): Promise<string | undefined> {
+  async resolveReasoningProfile(modelId: string, requestedStrategy: ReasoningStrategy = 'highest-supported', explicitValue?: string): Promise<string | undefined> {
     const model = (await this.discoverModels()).find((candidate) => candidate.id === modelId);
     if (!model) throw new WorkerAdapterError('MODEL_NOT_FOUND', `Codex model was not discovered: ${modelId}`);
     assertCodexModelSelectable(model);

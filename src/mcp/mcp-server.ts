@@ -33,7 +33,7 @@ export const MCP_TOOL_DEFINITIONS = [
   {
     name: 'worker_bridge_start_job',
     description:
-      'Start a new Worker Bridge job. Cursor Agent (Grok 4.6) orchestrates the task; Worker Bridge delegates to downstream CLI workers (Codex CLI, Antigravity CLI, Cursor CLI, OpenCode CLI) with automatic role-based model ranking. READ_ONLY jobs execute immediately in isolated worktrees. WORKTREE_WRITE mode requires authenticated owner authority and fails closed over MCP.',
+      'Start a new Worker Bridge job. Cursor Agent (Grok 4.6) orchestrates the task; Worker Bridge delegates to downstream CLI workers (Codex CLI, Antigravity CLI, Cursor CLI, Freebuff, OpenCode CLI) with automatic role-based model ranking. READ_ONLY jobs execute immediately in isolated worktrees. WORKTREE_WRITE mode requires authenticated owner authority and fails closed over MCP.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -61,8 +61,8 @@ export const MCP_TOOL_DEFINITIONS = [
         workerSelection: {
           type: 'object',
           properties: {
-            targetId: { type: 'string', description: 'Optional explicit target ID (e.g. cursor_grok_46_xhigh, codex_luna_max, agy_gemini_flash_37_high).' },
-            platform: { type: 'string', description: 'Optional platform constraint (cursor-cli, codex, antigravity, opencode).' },
+            targetId: { type: 'string', description: 'Optional explicit target ID (e.g. cursor_grok_46_xhigh, codex_luna_max, agy_gemini_flash_37_high, freebuff_default).' },
+            platform: { type: 'string', description: 'Optional platform constraint (cursor-cli, codex, antigravity, opencode, freebuff).' },
             model: { type: 'string', description: 'Optional model override or alias.' },
             reasoning: { type: 'string', description: 'Optional reasoning effort override.' },
           },

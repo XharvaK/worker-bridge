@@ -12,6 +12,7 @@ import { AdapterRegistry } from '../worker/adapter-registry.js';
 import { AntigravityAdapter } from '../worker/agy-adapter.js';
 import { CodexAdapter } from '../worker/codex-adapter.js';
 import { CursorAdapter } from '../worker/cursor-adapter.js';
+import { FreebuffAdapter } from '../worker/freebuff-adapter.js';
 import { OpenCodeAdapter } from '../worker/opencode-adapter.js';
 import { logger } from '../utils/logger.js';
 import { assertPathContained, canonicalizePath } from '../utils/path-authority.js';
@@ -74,11 +75,13 @@ export class DurableService {
     const codexExe = cfg.platforms?.codex?.executable || 'codex';
     const cursorExe = cfg.platforms?.['cursor-cli']?.executable || cfg.platforms?.cursor?.executable || 'cursor';
     const cursorModel = cfg.platforms?.['cursor-cli']?.defaultModel || cfg.platforms?.cursor?.defaultModel || 'grok-4.6';
+    const freebuffExe = cfg.platforms?.freebuff?.executable || 'freebuff';
 
     this.registry.register(new AntigravityAdapter(agyExe, agyModel, this.processManager));
     this.registry.register(new OpenCodeAdapter(opencodeExe, opencodeModel, this.processManager));
     this.registry.register(new CodexAdapter(codexExe, this.processManager));
     this.registry.register(new CursorAdapter(cursorExe, cursorModel, this.processManager));
+    this.registry.register(new FreebuffAdapter(freebuffExe, this.processManager));
 
     this.modelSelector = new ModelSelector(this.registry, cfg, this.availability);
     this.trustedRoots = options?.trustedRoots || [

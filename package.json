@@ -12,9 +12,9 @@
     "build": "tsc",
     "watch": "tsc --watch",
     "start": "node dist/index.js start",
-    "test": "vitest run --exclude test/integration/real-smoke.test.ts",
-    "test:real-smoke": "vitest run test/integration/real-smoke.test.ts",
-    "test:watch": "vitest"
+    "test": "vitest run --root . --exclude test/integration/real-smoke.test.ts",
+    "test:real-smoke": "vitest run --root . test/integration/real-smoke.test.ts",
+    "test:watch": "vitest --root ."
   },
   "keywords": [
     "antigravity",

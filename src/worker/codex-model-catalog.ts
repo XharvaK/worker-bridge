@@ -2,6 +2,7 @@ import {
   DiscoveredModel,
   DiscoveredReasoningProfile,
   ModelSelectability,
+  ReasoningStrategy,
   ReasoningTopology,
 } from '../types.js';
 import { WorkerAdapterError } from './worker-adapter.js';
@@ -181,7 +182,7 @@ export function assertCodexModelSelectable(model: DiscoveredModel): void {
 
 export function resolveCodexReasoningProfile(
   model: DiscoveredModel,
-  strategy: 'highest-supported' | 'explicit',
+  strategy: ReasoningStrategy = 'highest-supported',
   explicitValue?: string
 ): DiscoveredReasoningProfile {
   const profiles = model.reasoningProfiles ?? [];

@@ -89,6 +89,14 @@
       "reasoning": { "strategy": "highest-supported" },
       "explicitOnly": true,
       "modelBinding": "EXPLICIT_DISCOVERED"
+    },
+    "freebuff_default": {
+      "targetId": "freebuff_default",
+      "platformId": "freebuff",
+      "displayName": "Freebuff (provider-managed default)",
+      "aliases": ["freebuff_default", "freebuff", "Freebuff"],
+      "reasoning": { "strategy": "provider-managed" },
+      "modelBinding": "PROVIDER_MANAGED"
     }
   },
   "roleRankings": {
@@ -105,6 +113,7 @@
       "codex_luna_max",
       "agy_gemini_flash_37_high",
       "cursor_grok_46_medium",
+      "freebuff_default",
       "opencode_nemotron_35_lightning",
       "opencode_deepseek_v4_flash_max",
       "opencode_hy3_high",

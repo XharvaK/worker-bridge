@@ -94,6 +94,12 @@ export function validateConfig(raw: Partial<BridgeConfig>): BridgeConfig {
       defaultModel: 'grok-4.6',
     };
   }
+  if (!platforms.freebuff) {
+    platforms.freebuff = {
+      enabled: true,
+      executable: 'freebuff',
+    };
+  }
 
   const selectionPolicy = normalizeSelectionPolicy(raw.selectionPolicy);
 
@@ -127,7 +133,7 @@ function normalizeSelectionPolicy(rawPolicy?: SelectionPolicyConfig): SelectionP
     if (!target.platformId || !target.displayName || !target.reasoning?.strategy) {
       throw new Error(`Config validation failed: selection target "${key}" is incomplete.`);
     }
-    if (target.modelBinding !== undefined && !['FIXED', 'EXPLICIT_DISCOVERED'].includes(target.modelBinding)) {
+    if (target.modelBinding !== undefined && !['FIXED', 'EXPLICIT_DISCOVERED', 'PROVIDER_MANAGED'].includes(target.modelBinding)) {
       throw new Error(`Config validation failed: selection target "${key}" has invalid modelBinding.`);
     }
     const modelBinding = target.modelBinding ?? 'FIXED';
